@@ -18,3 +18,4 @@ __pycache__/
 *.json
 *.pkl
 *.npz
+.models/parquet
