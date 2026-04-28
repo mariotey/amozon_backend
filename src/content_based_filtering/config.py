@@ -5,7 +5,7 @@ from pathlib import Path
 REPO_ROOT: Path = Path(__file__).resolve().parents[3]
 
 # ── Artifact paths ────────────────────────────────────────────────────────────
-MODELS_DIR: Path = REPO_ROOT / "models"
+MODELS_DIR: Path = REPO_ROOT / "backend" / "models"
 TFIDF_PATH: Path = MODELS_DIR / "cb_tfidf.joblib"
 ITEM_MATRIX_PATH: Path = MODELS_DIR / "cb_item_matrix.npz"
 META_PATH: Path = MODELS_DIR / "cb_meta.parquet"

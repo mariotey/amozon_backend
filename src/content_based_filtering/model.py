@@ -17,7 +17,7 @@ from content_based_filtering.config import (
     TFIDF_NGRAM_RANGE,
     TFIDF_SUBLINEAR_TF
 )
-from data_loader.main import build_item_text, load_meta
+from data_loader.main import build_item_text, load_meta, load_item
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +40,9 @@ def build_and_save() -> ArtifactTuple:
         FileNotFoundError: If source data files are missing.
         OSError: If artifact directory cannot be created or files cannot be written.
     """
-    meta_df = load_meta()
-    meta_df["text"] = meta_df.apply(build_item_text, axis=1)
-    meta_df = meta_df[
+    modified_item_df = load_item()
+    modified_item_df["text"] = modified_item_df.apply(build_item_text, axis=1)
+    modified_item_df = modified_item_df[
         ["parent_asin", "item_title", "main_category", "text", "is_free"]
     ].reset_index(drop=True)
 
@@ -52,22 +52,22 @@ def build_and_save() -> ArtifactTuple:
         ngram_range=TFIDF_NGRAM_RANGE,
         sublinear_tf=TFIDF_SUBLINEAR_TF,
     )
-    item_matrix = tfidf.fit_transform(meta_df["text"])
+    item_matrix = tfidf.fit_transform(modified_item_df["text"])
     logger.info("Item matrix shape: %s", item_matrix.shape)
 
     try:
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         joblib.dump(tfidf, TFIDF_PATH)
         scipy.sparse.save_npz(str(ITEM_MATRIX_PATH), item_matrix)
-        meta_df.drop(columns=["text"]).to_parquet(META_PATH, index=False)
+        modified_item_df.drop(columns=["text"]).to_parquet(META_PATH, index=False)
     except OSError as exc:
         raise OSError(f"Failed to write model artifacts to {MODELS_DIR}") from exc
 
     logger.info("Artifacts saved to %s", MODELS_DIR)
 
-    item_to_idx = {asin: i for i, asin in enumerate(meta_df["parent_asin"])}
+    item_to_idx = {asin: i for i, asin in enumerate(modified_item_df["parent_asin"])}
     idx_to_item = {i: asin for asin, i in item_to_idx.items()}
-    return tfidf, item_matrix, meta_df, item_to_idx, idx_to_item
+    return tfidf, item_matrix, modified_item_df, item_to_idx, idx_to_item
 
 
 def load_artifacts() -> ArtifactTuple:
