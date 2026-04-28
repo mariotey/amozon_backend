@@ -19,9 +19,9 @@ import sys
 from typing import Any
 import pandas as pd
 from collaborative_filtering.config import DEFAULT_TOP_N
-from collaborative_filtering.data_loader import load_item
 from collaborative_filtering.model import build_and_save, load_artifacts
 from collaborative_filtering.recommender import recommend_for_user
+from data_loader.main import load_item
 
 logging.basicConfig(
     level=logging.INFO,

@@ -18,7 +18,7 @@ from collaborative_filtering.config import (
     ALS_REG,
     ALS_ITERA
 )
-from collaborative_filtering.data_loader import load_item, load_user_item
+from data_loader.main import load_item, load_user_item
 
 logger = logging.getLogger(__name__)
 

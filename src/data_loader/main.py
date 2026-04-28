@@ -1,9 +1,9 @@
 """Data loading utilities for the collaborative filtering module."""
 
 import logging
-from typing import Optional
+from typing import Optional, Any
 import pandas as pd
-from collaborative_filtering.config import ITEM_PARQUET, USER_PARQUET, USER_ITEM_PARQUET
+from data_loader.config import META_PARQUET, ITEM_PARQUET, USER_PARQUET, USER_ITEM_PARQUET
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,11 @@ def load_parquet_data(
     logger.info(f"Loaded {parquet_path} ({len(df)})")
     return df
 
+def load_meta() -> pd.DataFrame:
+    return load_parquet_data(
+        META_PARQUET
+    )
+
 def load_user() -> pd.DataFrame:
     """Loads user data.
 
@@ -73,3 +78,25 @@ def load_user_item() -> pd.DataFrame:
         USER_ITEM_PARQUET,
         compulsory_cols = ["user_id", "parent_asin", "review_rating", "recency_weight"]
     )
+
+
+def build_item_text(row: Any) -> str:
+    """Concatenate item title, description, and features into a single string.
+
+    Args:
+        row: A pandas Series representing one row of the metadata DataFrame.
+
+    Returns:
+        A whitespace-joined string of all text fields.
+    """
+    parts = [str(row["item_title"] or "")]
+
+    desc = row["description"]
+    feats = row["features"]
+
+    if isinstance(desc, list):
+        parts += [str(d) for d in desc if d]
+    if isinstance(feats, list):
+        parts += [str(f) for f in feats if f]
+
+    return " ".join(parts)

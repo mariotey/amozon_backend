@@ -4,12 +4,6 @@ from pathlib import Path
 
 REPO_ROOT: Path = Path(__file__).resolve().parents[3]
 
-# ── Data paths ────────────────────────────────────────────────────────────────
-DATA_DIR: Path = REPO_ROOT / "etl" / "data" / "output"
-USER_PARQUET: Path = DATA_DIR / "user.parquet"
-ITEM_PARQUET: Path = DATA_DIR / "item.parquet"
-USER_ITEM_PARQUET: Path = DATA_DIR / "user-item-interaction.parquet"
-
 # ── Artifact paths ────────────────────────────────────────────────────────────
 MODELS_DIR: Path = REPO_ROOT / "backend"/ "models"
 ALS_MODEL_PATH: Path = MODELS_DIR / "als_model.joblib"
