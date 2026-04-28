@@ -3,8 +3,6 @@ __pycache__/
 
 # Virtual environments
 .venv/
-env/
-venv/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
@@ -15,7 +13,8 @@ venv/
 # VS Code settings
 .vscode/
 
-# Downloaded datasets
-data/input/
-data/output/
-*.jpg
+# Model artifacts
+*.joblib
+*.json
+*.pkl
+*.npz
