@@ -19,7 +19,3 @@ venv/
 data/input/
 data/output/
 *.jpg
-
-
-#parquet files
-data/output

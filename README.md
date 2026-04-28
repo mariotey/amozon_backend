@@ -45,8 +45,3 @@ Unlike other methods, collaborative filtering does **not** require item metadata
 | Handles cold start well    | ❌ Poor for new users/items           | ✅ Better for new items                |
 | Personalization            | ✅ High                               | ✅ Medium to High                      |
 | Novelty in recommendations | ✅ Higher (via peer behavior)         | ❌ Lower (limited to known preferences)|
-
----
-
-### Supplementary Materials
-- https://docs.google.com/document/d/1WL2sqQqwEX4lao5uh8rcO0Hi3dVnIOY7upN6XCh3Wus/edit?usp=sharing
