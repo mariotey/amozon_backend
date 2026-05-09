@@ -21,3 +21,5 @@ __pycache__/
 .models/parquet
 
 .env
+
+data/
