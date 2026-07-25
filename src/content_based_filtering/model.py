@@ -1,23 +1,20 @@
 """TF-IDF model building, persistence, and loading for content-based filtering."""
 
 import logging
-
 import joblib
 import numpy as np
 import pandas as pd
 import scipy.sparse
 from sklearn.feature_extraction.text import TfidfVectorizer
-
-from content_based_filtering.config import (
-    MODELS_DIR,
-    TFIDF_PATH,
-    ITEM_MATRIX_PATH,
-    META_PATH,
-    TFIDF_MAX_FEATURES,
-    TFIDF_NGRAM_RANGE,
-    TFIDF_SUBLINEAR_TF
+from data_loader import build_item_text, load_meta, load_item
+from .tool_config import (
+    TFIDF_MAX_FEATURES, TFIDF_NGRAM_RANGE, TFIDF_SUBLINEAR_TF,
+    TFIDF_FILENAME, ITEM_MATRIX_FILENAME, META_FILENAME,
 )
-from data_loader.main import build_item_text, load_meta, load_item
+from config import (
+    MODEL_ARTEFACT_DIR,
+    LOCAL_READ
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +26,6 @@ ArtifactTuple = tuple[
     dict[int, str],
 ]
 
-
 def build_and_save() -> ArtifactTuple:
     """Fit TF-IDF on the item corpus and persist all artifacts to disk.
 
@@ -40,7 +36,7 @@ def build_and_save() -> ArtifactTuple:
         FileNotFoundError: If source data files are missing.
         OSError: If artifact directory cannot be created or files cannot be written.
     """
-    modified_item_df = load_item()
+    modified_item_df = load_item(local_read=LOCAL_READ)
     modified_item_df["text"] = modified_item_df.apply(build_item_text, axis=1)
     modified_item_df = modified_item_df[
         ["parent_asin", "item_title", "main_category", "text", "is_free"]
@@ -56,19 +52,18 @@ def build_and_save() -> ArtifactTuple:
     logger.info("Item matrix shape: %s", item_matrix.shape)
 
     try:
-        MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        joblib.dump(tfidf, TFIDF_PATH)
-        scipy.sparse.save_npz(str(ITEM_MATRIX_PATH), item_matrix)
-        modified_item_df.drop(columns=["text"]).to_parquet(META_PATH, index=False)
+        MODEL_ARTEFACT_DIR.mkdir(parents=True, exist_ok=True)
+        joblib.dump(tfidf, MODEL_ARTEFACT_DIR / TFIDF_FILENAME)
+        scipy.sparse.save_npz(str(MODEL_ARTEFACT_DIR / ITEM_MATRIX_FILENAME), item_matrix)
+        modified_item_df.drop(columns=["text"]).to_parquet(MODEL_ARTEFACT_DIR / META_FILENAME, index=False)
     except OSError as exc:
-        raise OSError(f"Failed to write model artifacts to {MODELS_DIR}") from exc
+        raise OSError(f"Failed to write model artifacts to {MODEL_ARTEFACT_DIR}") from exc
 
-    logger.info("Artifacts saved to %s", MODELS_DIR)
+    logger.info("Artifacts saved to %s", MODEL_ARTEFACT_DIR)
 
     item_to_idx = {asin: i for i, asin in enumerate(modified_item_df["parent_asin"])}
     idx_to_item = {i: asin for asin, i in item_to_idx.items()}
     return tfidf, item_matrix, modified_item_df, item_to_idx, idx_to_item
-
 
 def load_artifacts() -> ArtifactTuple:
     """Load persisted TF-IDF artifacts from disk.
@@ -80,7 +75,11 @@ def load_artifacts() -> ArtifactTuple:
         FileNotFoundError: If any artifact file is missing. Run build_and_save() first.
         OSError: If artifact files cannot be read.
     """
-    for path in (TFIDF_PATH, ITEM_MATRIX_PATH, META_PATH):
+    for path in (
+        MODEL_ARTEFACT_DIR / TFIDF_FILENAME,
+        MODEL_ARTEFACT_DIR / ITEM_MATRIX_FILENAME,
+        MODEL_ARTEFACT_DIR / META_FILENAME
+    ):
         if not path.exists():
             raise FileNotFoundError(
                 f"Artifact not found: {path}\n"
@@ -88,16 +87,16 @@ def load_artifacts() -> ArtifactTuple:
             )
 
     try:
-        logger.info("Loading TF-IDF vectorizer from %s", TFIDF_PATH)
-        tfidf: TfidfVectorizer = joblib.load(TFIDF_PATH)
+        logger.info("Loading TF-IDF vectorizer from %s", TFIDF_FILENAME)
+        tfidf: TfidfVectorizer = joblib.load(MODEL_ARTEFACT_DIR / TFIDF_FILENAME)
 
-        logger.info("Loading item matrix from %s", ITEM_MATRIX_PATH)
+        logger.info("Loading item matrix from %s", MODEL_ARTEFACT_DIR / ITEM_MATRIX_FILENAME)
         item_matrix: scipy.sparse.csr_matrix = scipy.sparse.load_npz(
-            str(ITEM_MATRIX_PATH)
+            str(MODEL_ARTEFACT_DIR / ITEM_MATRIX_FILENAME)
         )
 
-        logger.info("Loading item metadata from %s", META_PATH)
-        meta_df: pd.DataFrame = pd.read_parquet(META_PATH)
+        logger.info("Loading item metadata from %s", MODEL_ARTEFACT_DIR / META_FILENAME)
+        meta_df: pd.DataFrame = pd.read_parquet(MODEL_ARTEFACT_DIR / META_FILENAME)
     except OSError as exc:
         raise OSError("Failed to read model artifacts from disk.") from exc
 

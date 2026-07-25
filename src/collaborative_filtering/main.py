@@ -18,10 +18,11 @@ import logging
 import sys
 from typing import Any
 import pandas as pd
-from collaborative_filtering.config import DEFAULT_TOP_N
-from collaborative_filtering.model import build_and_save, load_artifacts
-from collaborative_filtering.recommender import recommend_for_user
-from data_loader.main import load_item
+from data_loader import load_item
+from .model import build_and_save, load_artifacts
+from .recommender import recommend_for_user
+from .tool_config import DEFAULT_TOP_N
+from config import LOCAL_READ
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,12 +30,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 # ── Module-level artifact cache (loaded once per warm container) ──────────────
 
 _item_df: pd.DataFrame | None = None
 _artifacts: tuple | None = None
-
 
 def _get_artifacts() -> tuple:
     """Return cached artifacts, loading from disk on first call.
@@ -52,9 +51,7 @@ def _get_artifacts() -> tuple:
         _artifacts = load_artifacts()
     return _artifacts
 
-
 # ── Public handler functions (Azure Function entry points) ────────────────────
-
 
 def get_user_recommendations(
     user_id: str,
@@ -94,7 +91,7 @@ def get_user_recommendations(
     )
 
     # Load item metadata and filter for targeted items
-    item_df = load_item()
+    item_df = load_item(local_read=LOCAL_READ)
     recs = item_df[item_df["parent_asin"].isin(recs_ids)][
         [
             "parent_asin",
@@ -107,9 +104,7 @@ def get_user_recommendations(
     # Convert to list of dictionaries (API-friendly format)
     return recs.to_dict(orient="records")
 
-
 # ── CLI wrapper (thin shell around the handler functions) ─────────────────────
-
 
 def build_model() -> None:
     """Fit the ALS model and persist all artifacts to disk.
@@ -121,7 +116,6 @@ def build_model() -> None:
     logger.info("Starting model build")
     build_and_save()
     logger.info("Model build complete")
-
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """
@@ -154,7 +148,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--n", type=int, default=DEFAULT_TOP_N, help="Number of results")
 
     return parser.parse_args(argv)
-
 
 def run_cli(argv: list[str] | None = None) -> None:
     """Entry point for CLI execution.

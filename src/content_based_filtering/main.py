@@ -18,13 +18,12 @@ import argparse
 import logging
 import sys
 from typing import Any
-
 import pandas as pd
-
-from content_based_filtering.config import DEFAULT_TOP_N
-from content_based_filtering.model import build_and_save, load_artifacts
-from content_based_filtering.recommender import recommend_for_user, similar_items
-from data_loader.main import load_user_item
+from data_loader import load_user_item
+from .model import build_and_save, load_artifacts
+from .recommender import recommend_for_user, similar_items
+from .tool_config import DEFAULT_TOP_N
+from config import LOCAL_READ
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,8 +32,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── Module-level artifact cache (loaded once per warm container) ──────────────
-_artifacts: tuple | None = None
 
+_artifacts: tuple | None = None
 
 def _get_artifacts() -> tuple:
     """Return cached artifacts, loading from disk on first call.
@@ -51,7 +50,6 @@ def _get_artifacts() -> tuple:
         logger.info("Cold start — loading artifacts from disk")
         _artifacts = load_artifacts()
     return _artifacts
-
 
 # ── Public handler functions (Azure Function entry points) ────────────────────
 
@@ -85,7 +83,7 @@ def get_user_recommendations(
     _, item_matrix, meta_df, item_to_idx, idx_to_item = _get_artifacts()
 
     logger.info("Fetching recommendations for user: %s (n=%d)", user_id, n)
-    user_item_df = load_user_item()
+    user_item_df = load_user_item(local_read=LOCAL_READ)
 
     recs: pd.DataFrame = recommend_for_user(
         user_id=user_id,
@@ -97,7 +95,6 @@ def get_user_recommendations(
         n=n,
     )
     return recs.to_dict(orient="records")
-
 
 def get_similar_items(
     parent_asin: str,
@@ -138,7 +135,6 @@ def get_similar_items(
     )
     return result.to_dict(orient="records")
 
-
 def build_model() -> None:
     """Fit the TF-IDF model and persist all artifacts to disk.
 
@@ -149,7 +145,6 @@ def build_model() -> None:
     logger.info("Starting model build")
     build_and_save()
     logger.info("Model build complete")
-
 
 # ── CLI wrapper (thin shell around the handler functions) ─────────────────────
 
@@ -168,7 +163,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--asin", type=str, default=None, help="Item ASIN (mode=item)")
     parser.add_argument("--n", type=int, default=DEFAULT_TOP_N, help="Number of results")
     return parser.parse_args(argv)
-
 
 def run_cli(argv: list[str] | None = None) -> None:
     """Parse CLI arguments and dispatch to the appropriate handler.
@@ -209,6 +203,6 @@ def run_cli(argv: list[str] | None = None) -> None:
         logger.error("Invalid input: %s", exc)
         sys.exit(1)
 
-
+# Script entry point
 if __name__ == "__main__":
     run_cli()

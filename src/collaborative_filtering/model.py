@@ -7,18 +7,15 @@ import numpy as np
 import scipy.sparse
 from sklearn.preprocessing import MinMaxScaler
 import implicit
-
-from collaborative_filtering.config import (
-    MODELS_DIR,
-    ALS_MODEL_PATH,
-    USER_ITEM_MATRIX_PATH,
-    USERID_MAPPING_PATH,
-    ITEMPASIN_MAPPING_PATH,
-    ALS_FACTORS,
-    ALS_REG,
-    ALS_ITERA
+from data_loader import load_item, load_user_item
+from .tool_config import (
+    ALS_FACTORS, ALS_REG, ALS_ITERA,
+    ALS_MODEL_FILENAME, USER_ITEM_MATRIX_FILENAME, USERID_MAPPING_FILENAME, ITEMPASIN_MAPPING_FILENAME
 )
-from data_loader.main import load_item, load_user_item
+from config import (
+    MODEL_ARTEFACT_DIR,
+    LOCAL_READ
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +30,8 @@ def build_and_save() -> tuple:
              mapping and idx_to_itempasin mapping
     """
     # Load data
-    item_df = load_item()
-    user_item_df = load_user_item()
+    item_df = load_item(local_read=LOCAL_READ)
+    user_item_df = load_user_item(local_read=LOCAL_READ)
     scaler = MinMaxScaler()
 
     # Merge user interactions with item features
@@ -103,24 +100,26 @@ def build_and_save() -> tuple:
 
     # Persist artifacts to disk
     try:
-        MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        MODEL_ARTEFACT_DIR.mkdir(parents=True, exist_ok=True)
 
         # Save the model typically stores only learned parameters (e.g. latent factors)
-        joblib.dump(model, ALS_MODEL_PATH)
+        joblib.dump(model, MODEL_ARTEFACT_DIR / ALS_MODEL_FILENAME)
 
         # Save the user-item matrix, defines the mapping between users and items used during training/inference
-        scipy.sparse.save_npz(USER_ITEM_MATRIX_PATH, interaction_matrix)
+        scipy.sparse.save_npz(MODEL_ARTEFACT_DIR / USER_ITEM_MATRIX_FILENAME, interaction_matrix)
 
         # Save the index mapping for idx to user_id
-        with open(USERID_MAPPING_PATH, "w") as f:
+        with open(MODEL_ARTEFACT_DIR / USERID_MAPPING_FILENAME, "w") as f:
             json.dump({str(k): v for k, v in idx_to_userid.items()}, f)
 
         # Save the index mapping for idx to items parent_asin
-        with open(ITEMPASIN_MAPPING_PATH, "w") as f:
+        with open(MODEL_ARTEFACT_DIR / ITEMPASIN_MAPPING_FILENAME, "w") as f:
             json.dump({str(k): v for k, v in idx_to_itempasin.items()}, f)
 
+        print(f"Successfully written model artefacts into {MODEL_ARTEFACT_DIR / MODEL_ARTEFACT_DIR}")
+
     except OSError as exc:
-        raise OSError(f"Failed to write model artifacts to {MODELS_DIR}") from exc
+        raise OSError(f"Failed to write model artefacts to {MODEL_ARTEFACT_DIR / MODEL_ARTEFACT_DIR}") from exc
 
     return model, interaction_matrix, idx_to_userid, idx_to_itempasin
 
@@ -136,7 +135,12 @@ def load_artifacts() -> tuple:
     - FileNotFoundError: if artifact file does not exist
     """
     # Ensure artifact exists
-    for path in (ALS_MODEL_PATH, USER_ITEM_MATRIX_PATH, USERID_MAPPING_PATH, ITEMPASIN_MAPPING_PATH):
+    for path in (
+        MODEL_ARTEFACT_DIR  / ALS_MODEL_FILENAME,
+        MODEL_ARTEFACT_DIR / USER_ITEM_MATRIX_FILENAME,
+        MODEL_ARTEFACT_DIR / USERID_MAPPING_FILENAME,
+        MODEL_ARTEFACT_DIR / ITEMPASIN_MAPPING_FILENAME
+    ):
         if not path.exists():
             raise FileNotFoundError(
                 f"Artifact not found: {path}\n"
@@ -144,17 +148,19 @@ def load_artifacts() -> tuple:
             )
 
     # Load the CF model
-    model = joblib.load(ALS_MODEL_PATH)
+    model = joblib.load(MODEL_ARTEFACT_DIR / ALS_MODEL_FILENAME)
 
     # Load the user-item matrix
-    interaction_matrix = scipy.sparse.load_npz(USER_ITEM_MATRIX_PATH)
+    interaction_matrix = scipy.sparse.load_npz(MODEL_ARTEFACT_DIR / USER_ITEM_MATRIX_FILENAME)
 
     # Load user index mapping (model index → real user_id)
-    with open(USERID_MAPPING_PATH) as f:
+    with open(MODEL_ARTEFACT_DIR / USERID_MAPPING_FILENAME) as f:
         idx_to_userid = {int(k): v for k, v in json.load(f).items()}
 
     # Load item index mapping (model index → real item parent_asin)
-    with open(ITEMPASIN_MAPPING_PATH) as f:
+    with open(MODEL_ARTEFACT_DIR / ITEMPASIN_MAPPING_FILENAME) as f:
         idx_to_itempasin = {int(k): v for k, v in json.load(f).items()}
+
+    print("Successfully loaded model artefacts")
 
     return model, interaction_matrix, idx_to_userid, idx_to_itempasin

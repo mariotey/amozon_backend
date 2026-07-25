@@ -1,13 +1,11 @@
 """Core recommendation logic for content-based filtering."""
 
 import logging
-
 import numpy as np
 import pandas as pd
 import scipy.sparse
 from sklearn.metrics.pairwise import cosine_similarity
-
-from content_based_filtering.config import (
+from .tool_config import (
     DEFAULT_TOP_N,
     CANDIDATE_POOL_MULTIPLIER,
     MIN_RATING_THRESHOLD,
@@ -16,7 +14,6 @@ from content_based_filtering.config import (
 )
 
 logger = logging.getLogger(__name__)
-
 
 def build_user_profile(
     user_id: str,
@@ -50,7 +47,6 @@ def build_user_profile(
     indices = hist["parent_asin"].map(item_to_idx).values
     profile = (weights @ item_matrix[indices]) / (weights.sum() + 1e-9)
     return np.asarray(profile).reshape(1, -1)
-
 
 def recommend_for_user(
     user_id: str,
@@ -144,7 +140,6 @@ def recommend_for_user(
     recommendations = pool.sort_values("score", ascending=False).head(n).reset_index(drop=True)
     logger.info("Returning %d recommendations for user: %s", len(recommendations), user_id)
     return recommendations
-
 
 def similar_items(
     parent_asin: str,

@@ -4,8 +4,8 @@ import logging
 import numpy as np
 import pandas as pd
 import scipy.sparse
-from collaborative_filtering.model import load_artifacts
-from collaborative_filtering.config import (
+from .model import load_artifacts
+from .tool_config import (
     DEFAULT_TOP_N
 )
 
