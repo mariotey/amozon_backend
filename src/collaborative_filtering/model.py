@@ -3,24 +3,26 @@
 import logging
 import joblib
 import json
+import pandas as pd
 import numpy as np
 import scipy.sparse
 from sklearn.preprocessing import MinMaxScaler
 import implicit
-from data_loader import load_item, load_user_item
 from .tool_config import (
     ALS_FACTORS, ALS_REG, ALS_ITERA,
     ALS_MODEL_FILENAME, USER_ITEM_MATRIX_FILENAME, USERID_MAPPING_FILENAME, ITEMPASIN_MAPPING_FILENAME
 )
 from config import (
-    MODEL_ARTEFACT_DIR,
-    LOCAL_READ
+    MODEL_ARTEFACT_DIR
 )
 
 logger = logging.getLogger(__name__)
 
 
-def build_and_save() -> tuple:
+def build_and_save(
+    item_df: pd.DataFrame,
+    user_item_df: pd.DataFrame
+) -> tuple:
     """
     Build the ALS collaborative filtering model from raw interaction data and persist all required
     artifacts to disk.
@@ -29,9 +31,6 @@ def build_and_save() -> tuple:
     - tuple: A tuple containing a trained ALS model, user-item interaction matrix (CSR), idx_to_userid
              mapping and idx_to_itempasin mapping
     """
-    # Load data
-    item_df = load_item(local_read=LOCAL_READ)
-    user_item_df = load_user_item(local_read=LOCAL_READ)
     scaler = MinMaxScaler()
 
     # Merge user interactions with item features

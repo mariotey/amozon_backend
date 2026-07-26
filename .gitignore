@@ -1,25 +1,18 @@
+# VS Code settings
+.vscode/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 
 # Virtual environments
 .venv/
+.env
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
 
-# Pytest cache
-.pytest_cache/
-
-# VS Code settings
-.vscode/
-
 # Model artifacts
-*.joblib
-*.json
-*.pkl
-*.npz
-.models/parquet
+models/
 
-.env
-
+# Data directory
 data/

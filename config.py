@@ -28,8 +28,7 @@ ITEM_TABLE_NAME = "Item"
 # Data Filename
 USER_REVIEW_FILENAME = "review_data.parquet"
 ITEM_METADATA_FILENAME = "meta_data.parquet"
-USER_ITEM_INTERACT_FILENAME = "user-item-interaction.parquet"
+
 USER_FILENAME = "user.parquet"
 ITEM_FILENAME = "item.parquet"
-
-LOCAL_READ: bool = True
+USER_ITEM_INTERACT_FILENAME = "user-item-interaction.parquet"

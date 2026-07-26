@@ -19,11 +19,10 @@ import logging
 import sys
 from typing import Any
 import pandas as pd
-from data_loader import load_user_item
+from data_loader import DataLoader
 from .model import build_and_save, load_artifacts
 from .recommender import recommend_for_user, similar_items
 from .tool_config import DEFAULT_TOP_N
-from config import LOCAL_READ
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,6 +33,7 @@ logger = logging.getLogger(__name__)
 # ── Module-level artifact cache (loaded once per warm container) ──────────────
 
 _artifacts: tuple | None = None
+data_obj = DataLoader()
 
 def _get_artifacts() -> tuple:
     """Return cached artifacts, loading from disk on first call.
@@ -83,7 +83,7 @@ def get_user_recommendations(
     _, item_matrix, meta_df, item_to_idx, idx_to_item = _get_artifacts()
 
     logger.info("Fetching recommendations for user: %s (n=%d)", user_id, n)
-    user_item_df = load_user_item(local_read=LOCAL_READ)
+    user_item_df = data_obj.user_item_df
 
     recs: pd.DataFrame = recommend_for_user(
         user_id=user_id,
@@ -143,7 +143,11 @@ def build_model() -> None:
         OSError: If artifacts cannot be written to disk.
     """
     logger.info("Starting model build")
-    build_and_save()
+
+    build_and_save(
+        data_obj.item_df
+    )
+
     logger.info("Model build complete")
 
 # ── CLI wrapper (thin shell around the handler functions) ─────────────────────

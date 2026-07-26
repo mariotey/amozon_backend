@@ -18,11 +18,10 @@ import logging
 import sys
 from typing import Any
 import pandas as pd
-from data_loader import load_item
+from data_loader import DataLoader
 from .model import build_and_save, load_artifacts
 from .recommender import recommend_for_user
 from .tool_config import DEFAULT_TOP_N
-from config import LOCAL_READ
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 _item_df: pd.DataFrame | None = None
 _artifacts: tuple | None = None
+data_obj = DataLoader()
 
 def _get_artifacts() -> tuple:
     """Return cached artifacts, loading from disk on first call.
@@ -91,7 +91,7 @@ def get_user_recommendations(
     )
 
     # Load item metadata and filter for targeted items
-    item_df = load_item(local_read=LOCAL_READ)
+    item_df = data_obj.item_df
     recs = item_df[item_df["parent_asin"].isin(recs_ids)][
         [
             "parent_asin",
@@ -114,7 +114,12 @@ def build_model() -> None:
     - OSError: If artifacts cannot be written to disk.
     """
     logger.info("Starting model build")
-    build_and_save()
+
+    build_and_save(
+        data_obj.item_df,
+        data_obj.user_item_df
+    )
+
     logger.info("Model build complete")
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

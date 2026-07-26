@@ -1,5 +1,6 @@
-from typing import Optional, Any
+import os
 import pandas as pd
+from dotenv import load_dotenv
 from utils.supabase_utils import extract_df_from_supabase
 from config import (
     DATA_OUTPUT_DIR,
@@ -7,63 +8,46 @@ from config import (
     USER_TABLE_NAME, ITEM_TABLE_NAME, REVIEW_TABLE_NAME
 )
 
-def load_meta():
-    return pd.read_parquet(DATA_OUTPUT_DIR / ITEM_METADATA_FILENAME)
+# Load environment variables
+load_dotenv()
 
-def load_data(
-    local_filename,
-    supabase_tablename,
-    local_read: bool = False
-):
-    if local_read:
-        return pd.read_parquet(DATA_OUTPUT_DIR / local_filename)
+PRODUCTION_FLAG = os.getenv("PRODUCTION_FLAG", "false").lower() == "true"
 
-    return extract_df_from_supabase(supabase_tablename)
+def load_data(local_filename, supabase_tablename, prod_flag):
 
-def load_user_item(
-    local_read: bool = False
-):
-    return load_data(
-        USER_ITEM_INTERACT_FILENAME,
-        REVIEW_TABLE_NAME,
-        local_read
-    )
+    if prod_flag:
+        print("Fetching latest data from supabase...")
 
-def load_user(
-    local_read: bool = False
-):
-    return load_data(
-        USER_FILENAME,
-        USER_TABLE_NAME,
-        local_read
-    )
+        return extract_df_from_supabase(supabase_tablename)
 
-def load_item(
-    local_read: bool = False
-):
-    return load_data(
-        ITEM_FILENAME,
-        ITEM_TABLE_NAME,
-        local_read
-    )
+    parquet_path = DATA_OUTPUT_DIR / local_filename
 
-def build_item_text(row: Any) -> str:
-    """Concatenate item title, description, and features into a single string.
+    try:
+        print("Reading data from local drive...")
 
-    Args:
-        row: A pandas Series representing one row of the metadata DataFrame.
+        return pd.read_parquet(parquet_path)
 
-    Returns:
-        A whitespace-joined string of all text fields.
-    """
-    parts = [str(row["item_title"] or "")]
+    except FileNotFoundError:
+        print("\nFetching from supabase and then saving into local drive...")
 
-    desc = row["description"]
-    feats = row["features"]
+        df = extract_df_from_supabase(supabase_tablename)
+        df.to_parquet(parquet_path, index=False)
 
-    if isinstance(desc, list):
-        parts += [str(d) for d in desc if d]
-    if isinstance(feats, list):
-        parts += [str(f) for f in feats if f]
+        return df
 
-    return " ".join(parts)
+class DataLoader:
+    def __init__(
+            self,
+            prod_flag=PRODUCTION_FLAG
+        ):
+        self.user_df = load_data(
+            USER_FILENAME, USER_TABLE_NAME, prod_flag
+        )
+
+        self.item_df = load_data(
+            ITEM_FILENAME, ITEM_TABLE_NAME, prod_flag
+        )
+
+        self.user_item_df = load_data(
+            USER_ITEM_INTERACT_FILENAME, REVIEW_TABLE_NAME, prod_flag
+        )
