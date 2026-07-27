@@ -13,16 +13,16 @@ CLI usage (from repo root or src/):
     python -m content_based_filtering.main --mode user --user_id <id> --n 10
     python -m content_based_filtering.main --mode item --asin <asin> --n 10
 """
-
 import argparse
 import logging
 import sys
 from typing import Any
 import pandas as pd
 from data_loader import DataLoader
-from .model import build_and_save, load_artifacts
+from models_loader import ModelsLoader
+from .model import build_and_save
 from .recommender import recommend_for_user, similar_items
-from .tool_config import DEFAULT_TOP_N
+from .tool_config import DEFAULT_TOP_N, MODEL_NAME, MODEL_ARTEFACTS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,24 +32,8 @@ logger = logging.getLogger(__name__)
 
 # ── Module-level artifact cache (loaded once per warm container) ──────────────
 
-_artifacts: tuple | None = None
 data_obj = DataLoader()
-
-def _get_artifacts() -> tuple:
-    """Return cached artifacts, loading from disk on first call.
-
-    Returns:
-        Tuple of (tfidf, item_matrix, meta_df, item_to_idx, idx_to_item).
-
-    Raises:
-        FileNotFoundError: If artifacts have not been built yet.
-        OSError: If artifact files cannot be read.
-    """
-    global _artifacts  # pylint: disable=global-statement
-    if _artifacts is None:
-        logger.info("Cold start — loading artifacts from disk")
-        _artifacts = load_artifacts()
-    return _artifacts
+artefact_obj = ModelsLoader()
 
 # ── Public handler functions (Azure Function entry points) ────────────────────
 
@@ -62,36 +46,29 @@ def get_user_recommendations(
     Designed to be called directly by an Azure Function HTTP trigger.
 
     Args:
-        user_id: The user identifier.
-        n: Number of recommendations to return (default: DEFAULT_TOP_N).
+    - user_id (str): The user identifier
+    - n (int): Number of recommendations to return (default: DEFAULT_TOP_N)
 
     Returns:
-        List of dicts with keys: parent_asin, score, item_title,
-        main_category, is_free. Returns an empty list if the user
-        has no qualifying history.
+    - list[dict[str, Any]]: List of dicts with keys ["parent_asin", "score", "item_title",
+                            "main_category", "is_free"]. Returns an empty list if the user has no
+                            qualifying history.
 
     Raises:
-        ValueError: If user_id is empty or n is not a positive integer.
-        FileNotFoundError: If model artifacts are not found on disk.
-        OSError: If artifacts cannot be read.
+    - ValueError: If user_id is empty or n is not a positive integer
+    - FileNotFoundError: If model artifacts are not found on disk
     """
     if not user_id or not user_id.strip():
         raise ValueError("user_id must be a non-empty string")
     if n < 1:
         raise ValueError(f"n must be a positive integer, got {n}")
 
-    _, item_matrix, meta_df, item_to_idx, idx_to_item = _get_artifacts()
-
     logger.info("Fetching recommendations for user: %s (n=%d)", user_id, n)
-    user_item_df = data_obj.user_item_df
 
     recs: pd.DataFrame = recommend_for_user(
         user_id=user_id,
-        user_item_df=user_item_df,
-        item_matrix=item_matrix,
-        meta_df=meta_df,
-        item_to_idx=item_to_idx,
-        idx_to_item=idx_to_item,
+        user_item_df=data_obj.user_item_df,
+        artefacts=artefact_obj.model_artefacts[MODEL_NAME],
         n=n,
     )
     return recs.to_dict(orient="records")
@@ -105,32 +82,27 @@ def get_similar_items(
     Designed to be called directly by an Azure Function HTTP trigger.
 
     Args:
-        parent_asin: The ASIN of the seed item.
-        n: Number of similar items to return (default: DEFAULT_TOP_N).
+    - parent_asin (str): The ASIN of the seed item
+    - n (int): Number of similar items to return (default: DEFAULT_TOP_N)
 
     Returns:
-        List of dicts with keys: parent_asin, score, item_title,
-        main_category. Returns an empty list if the ASIN is unknown.
+    - list[dict[str, Any]]: List of dicts with keys ["parent_asin", "score", "item_title",
+                            "main_category"]. Returns an empty list if the ASIN is unknown.
 
     Raises:
-        ValueError: If parent_asin is empty or n is not a positive integer.
-        FileNotFoundError: If model artifacts are not found on disk.
-        OSError: If artifacts cannot be read.
+        ValueError: If parent_asin is empty or n is not a positive integer
+        FileNotFoundError: If model artifacts are not found on disk
     """
     if not parent_asin or not parent_asin.strip():
         raise ValueError("parent_asin must be a non-empty string")
     if n < 1:
         raise ValueError(f"n must be a positive integer, got {n}")
 
-    _, item_matrix, meta_df, item_to_idx, idx_to_item = _get_artifacts()
-
     logger.info("Fetching similar items for ASIN: %s (n=%d)", parent_asin, n)
+
     result: pd.DataFrame = similar_items(
         parent_asin=parent_asin,
-        item_matrix=item_matrix,
-        meta_df=meta_df,
-        item_to_idx=item_to_idx,
-        idx_to_item=idx_to_item,
+        artefacts=artefact_obj.model_artefacts[MODEL_NAME],
         n=n,
     )
     return result.to_dict(orient="records")
@@ -139,8 +111,8 @@ def build_model() -> None:
     """Fit the TF-IDF model and persist all artifacts to disk.
 
     Raises:
-        FileNotFoundError: If source data files are missing.
-        OSError: If artifacts cannot be written to disk.
+    - FileNotFoundError: If source data files are missing
+    - OSError: If artifacts cannot be written to disk
     """
     logger.info("Starting model build")
 
@@ -152,7 +124,19 @@ def build_model() -> None:
 
 # ── CLI wrapper (thin shell around the handler functions) ─────────────────────
 
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def _parse_args(
+    argv: list[str] | None = None
+) -> argparse.Namespace:
+    """
+    Parse CLI arguments.
+
+    Args:
+    - argv (list[str] | None): Argument list (defaults to sys.argv when None)
+
+    Returns:
+    - argparse.Namespace: Parsed arguments object containing "mode" (build/user), "user_id"
+                          (optional) and "n" (number of recommendations)
+    """
     parser = argparse.ArgumentParser(
         description="Content-Based Recommender — CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -168,14 +152,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--n", type=int, default=DEFAULT_TOP_N, help="Number of results")
     return parser.parse_args(argv)
 
-def run_cli(argv: list[str] | None = None) -> None:
+def run_cli(
+    argv: list[str] | None = None
+) -> None:
     """Parse CLI arguments and dispatch to the appropriate handler.
 
     Args:
-        argv: Argument list (defaults to sys.argv when None).
+    - argv (list[str] | None): Argument list (defaults to sys.argv when None)
 
     Raises:
-        SystemExit: On argument errors or unrecoverable runtime errors.
+    - SystemExit: On argument errors or unrecoverable runtime errors
     """
     args = _parse_args(argv)
 

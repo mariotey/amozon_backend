@@ -1,0 +1,1 @@
+"""Collaborative filtering package for the Amozon software recommender."""

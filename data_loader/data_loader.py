@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 from dotenv import load_dotenv
-from utils.supabase_utils import extract_df_from_supabase
+from utils.supabase_utils import extract_table_from_supabase
 from config import (
     DATA_OUTPUT_DIR,
     USER_FILENAME, ITEM_FILENAME, USER_ITEM_INTERACT_FILENAME, ITEM_METADATA_FILENAME,
@@ -18,19 +18,20 @@ def load_data(local_filename, supabase_tablename, prod_flag):
     if prod_flag:
         print("Fetching latest data from supabase...")
 
-        return extract_df_from_supabase(supabase_tablename)
+        return extract_table_from_supabase(supabase_tablename)
 
     parquet_path = DATA_OUTPUT_DIR / local_filename
 
     try:
-        print("Reading data from local drive...")
+        print(f"Reading `{supabase_tablename}` from local drive...\n")
 
         return pd.read_parquet(parquet_path)
 
     except FileNotFoundError:
-        print("\nFetching from supabase and then saving into local drive...")
+        print(f"{supabase_tablename} cannot be found in local drive.")
+        print("Fetching `{supabase_tablename}` from supabase and then saving into local drive...")
 
-        df = extract_df_from_supabase(supabase_tablename)
+        df = extract_table_from_supabase(supabase_tablename)
         df.to_parquet(parquet_path, index=False)
 
         return df
@@ -51,3 +52,5 @@ class DataLoader:
         self.user_item_df = load_data(
             USER_ITEM_INTERACT_FILENAME, REVIEW_TABLE_NAME, prod_flag
         )
+
+    print("\nTabular Data successfully loaded!\n")

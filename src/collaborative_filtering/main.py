@@ -12,16 +12,16 @@ CLI usage (from repo root or src/):
     python -m collaborative_filtering.main --mode build
     python -m collaborative_filtering.main --mode user --user_id <id> --n 10
 """
-
 import argparse
 import logging
 import sys
 from typing import Any
 import pandas as pd
 from data_loader import DataLoader
-from .model import build_and_save, load_artifacts
+from models_loader import ModelsLoader
+from .model import build_and_save
 from .recommender import recommend_for_user
-from .tool_config import DEFAULT_TOP_N
+from .tool_config import DEFAULT_TOP_N, MODEL_NAME, MODEL_ARTEFACTS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,25 +31,8 @@ logger = logging.getLogger(__name__)
 
 # ── Module-level artifact cache (loaded once per warm container) ──────────────
 
-_item_df: pd.DataFrame | None = None
-_artifacts: tuple | None = None
 data_obj = DataLoader()
-
-def _get_artifacts() -> tuple:
-    """Return cached artifacts, loading from disk on first call.
-
-    Returns:
-        Tuple of (tfidf, item_matrix, meta_df, item_to_idx, idx_to_item).
-
-    Raises:
-        FileNotFoundError: If artifacts have not been built yet.
-        OSError: If artifact files cannot be read.
-    """
-    global _artifacts  # pylint: disable=global-statement
-    if _artifacts is None:
-        logger.info("Cold start — loading artifacts from disk")
-        _artifacts = load_artifacts()
-    return _artifacts
+artefact_obj = ModelsLoader()
 
 # ── Public handler functions (Azure Function entry points) ────────────────────
 
@@ -72,8 +55,8 @@ def get_user_recommendations(
                             "main_category" and "is_free"
 
     Raises:
-    - ValueError: If user_id is empty or n is invalid.
-    - FileNotFoundError: If required data or artifacts are missing.
+    - ValueError: If user_id is empty or n is invalid
+    - FileNotFoundError: If required data or artifacts are missing
     """
     # Input Validation
     if not user_id or not user_id.strip():
@@ -86,8 +69,8 @@ def get_user_recommendations(
     # Core recommendation logic, returns a list of item parent_asin
     recs_ids: list[str] = recommend_for_user(
         user_id=user_id,
-        n=n,
-        artifacts=_get_artifacts()
+        artefacts=artefact_obj.model_artefacts[MODEL_NAME],
+        n=n
     )
 
     # Load item metadata and filter for targeted items
@@ -110,8 +93,8 @@ def build_model() -> None:
     """Fit the ALS model and persist all artifacts to disk.
 
     Raises:
-    - FileNotFoundError: If source data files are missing.
-    - OSError: If artifacts cannot be written to disk.
+    - FileNotFoundError: If source data files are missing
+    - OSError: If artifacts cannot be written to disk
     """
     logger.info("Starting model build")
 
@@ -122,12 +105,14 @@ def build_model() -> None:
 
     logger.info("Model build complete")
 
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def _parse_args(
+    argv: list[str] | None = None
+) -> argparse.Namespace:
     """
     Parse CLI arguments.
 
     Args:
-    - argv (list[str] | None): Argument list (defaults to sys.argv when None).
+    - argv (list[str] | None): Argument list (defaults to sys.argv when None)
 
     Returns:
     - argparse.Namespace: Parsed arguments object containing "mode" (build/user), "user_id"
@@ -154,16 +139,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     return parser.parse_args(argv)
 
-def run_cli(argv: list[str] | None = None) -> None:
+def run_cli(
+    argv: list[str] | None = None
+) -> None:
     """Entry point for CLI execution.
 
     Parse CLI arguments and dispatch to the appropriate handler.
 
     Args:
-    - argv (list[str] | None): Argument list (defaults to sys.argv when None).
+    - argv (list[str] | None): Argument list (defaults to sys.argv when None)
 
     Raises:
-    - SystemExit: On argument errors or unrecoverable runtime errors.
+    - SystemExit: On argument errors or unrecoverable runtime errors
     """
     args = _parse_args(argv)
 

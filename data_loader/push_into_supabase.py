@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from utils.supabase_utils import upload_df_to_supabase
+from utils.supabase_utils import push_table_into_supabase
 from config import (
     DATA_OUTPUT_DIR,
     USER_ITEM_INTERACT_FILENAME, ITEM_FILENAME, USER_FILENAME,
@@ -26,7 +26,7 @@ reviews_df = (
 
 # print(reviews_df.isna().sum())
 
-upload_df_to_supabase(reviews_df, REVIEW_TABLE_NAME)
+push_table_into_supabase(reviews_df, REVIEW_TABLE_NAME)
 
 #################################################################################################
 # Push "Item" Table
@@ -40,7 +40,7 @@ item_df = (
 
 # print(item_df.isna().sum())
 
-upload_df_to_supabase(item_df, ITEM_TABLE_NAME)
+push_table_into_supabase(item_df, ITEM_TABLE_NAME)
 
 #################################################################################################
 # Push "User" Table
@@ -54,4 +54,6 @@ user_df = (
 
 # print(user_df.isna().sum())
 
-upload_df_to_supabase(user_df, USER_FILENAME)
+push_table_into_supabase(user_df, USER_FILENAME)
+
+print("Successful push of Tabular Data into supabase!")

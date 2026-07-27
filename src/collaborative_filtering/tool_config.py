@@ -11,7 +11,12 @@ ALS_ITERA: int = 20
 DEFAULT_TOP_N: int = 10
 
 # ── Artefact Filenames ─────────────────────────────────────────────────────────────────────────
-ALS_MODEL_FILENAME: str = "als_model.joblib"
-USER_ITEM_MATRIX_FILENAME: str = "cf_user_item_matrix.npz"
-USERID_MAPPING_FILENAME: str = "idx_to_userid_mapping.json"
-ITEMPASIN_MAPPING_FILENAME: str = "idx_to_itempasin_mapping.json"
+MODEL_ID: str = "xxxxx"
+MODEL_NAME: str = "collaborative_filtering"
+
+MODEL_ARTEFACTS = {
+    "als_model_filename": "als_model.joblib",
+    "user_item_matrix_filename": "cf_user_item_matrix.npz",
+    "uid_mapping_filename": "idx_to_userid_mapping.json",
+    "itempasin_mapping_filename": "idx_to_itempasin_mapping.json"
+}

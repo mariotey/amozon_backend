@@ -1,5 +1,5 @@
 """Core recommendation logic for content-based filtering."""
-
+from typing import Any
 import logging
 import numpy as np
 import pandas as pd
@@ -24,14 +24,14 @@ def build_user_profile(
     """Build a weighted TF-IDF profile vector for a user from their review history.
 
     Args:
-        user_id: The user identifier.
-        user_item_df: DataFrame of user-item interactions.
-        item_matrix: Sparse TF-IDF item matrix (n_items × n_features).
-        item_to_idx: Mapping from parent_asin to row index in item_matrix.
+    - user_id (str): The user identifier
+    - user_item_df (pd.DataFrame): DataFrame of user-item interactions
+    - item_matrix (scipy.sparse.csr_matrix): Sparse TF-IDF item matrix (n_items × n_features)
+    - item_to_idx (dict[str, int]): Mapping from parent_asin to row index in item_matrix
 
     Returns:
-        A (1 × n_features) numpy array representing the user profile,
-        or None if the user has no qualifying history.
+    - np.ndarray: A (1 × n_features) numpy array representing the user profile, or None if the
+                  user has no qualifying history
     """
     hist = user_item_df[user_item_df["user_id"] == user_id].copy()
     hist = hist[
@@ -48,36 +48,57 @@ def build_user_profile(
     profile = (weights @ item_matrix[indices]) / (weights.sum() + 1e-9)
     return np.asarray(profile).reshape(1, -1)
 
+def build_item_index_maps(
+    meta_df: pd.DataFrame
+) -> tuple[dict[str, int], dict[int, str]]:
+    """Build mappings between item IDs and their corresponding matrix indices.
+
+    Args:
+    - meta_df (pd.DataFrame): DataFrame containing a "parent_asin" column
+
+    Returns:
+    - tuple:
+        - item_to_idx: Maps each parent ASIN to its integer index
+        - idx_to_item: Maps each integer index back to its parent ASIN
+    """
+    item_to_idx = {
+        asin: idx
+        for idx, asin in enumerate(meta_df["parent_asin"])
+    }
+    idx_to_item = {
+        idx: asin
+        for asin, idx in item_to_idx.items()
+    }
+
+    return item_to_idx, idx_to_item
+
 def recommend_for_user(
     user_id: str,
     user_item_df: pd.DataFrame,
-    item_matrix: scipy.sparse.csr_matrix,
-    meta_df: pd.DataFrame,
-    item_to_idx: dict[str, int],
-    idx_to_item: dict[int, str],
+    artefacts: tuple[Any, ...],
     n: int = DEFAULT_TOP_N,
 ) -> pd.DataFrame:
     """Generate top-N content-based recommendations for a user.
 
-    Excludes already-seen items, boosts the user's preferred category,
-    and optionally filters out paid items for users who prefer free software.
+    Excludes already-seen items, boosts the user's preferred category, and optionally filters out
+    paid items for users who prefer free software.
 
     Args:
-        user_id: The user identifier.
-        user_item_df: DataFrame of user-item interactions.
-        item_matrix: Sparse TF-IDF item matrix.
-        meta_df: Product metadata DataFrame.
-        item_to_idx: Mapping from parent_asin to item_matrix row index.
-        idx_to_item: Reverse mapping from index to parent_asin.
-        n: Number of recommendations to return.
+    - user_id (str): The user identifier
+    - user_item_df (pd.DataFrame): DataFrame of user-item interactions
+    - artefacts (tuple): Loaded artefacts of the tool
+    - n (int): Number of recommendations to return
 
     Returns:
-        DataFrame with columns: parent_asin, score, item_title,
-        main_category, is_free. Empty if the user has no history.
+    - pd.DataFrame: A DataFrame with columns ["parent_asin", "score", "item_title",
+                    "main_category", "is_free"]. Empty if the user has no history
 
     Raises:
-        ValueError: If n is not a positive integer.
+    - ValueError: If n is not a positive integer.
     """
+    _, item_matrix, meta_df = artefacts
+    item_to_idx, idx_to_item = build_item_index_maps(meta_df)
+
     if n < 1:
         raise ValueError(f"n must be a positive integer, got {n}")
 
@@ -138,34 +159,33 @@ def recommend_for_user(
         logger.debug("Applied free-only filter for user: %s", user_id)
 
     recommendations = pool.sort_values("score", ascending=False).head(n).reset_index(drop=True)
+
     logger.info("Returning %d recommendations for user: %s", len(recommendations), user_id)
+
     return recommendations
 
 def similar_items(
     parent_asin: str,
-    item_matrix: scipy.sparse.csr_matrix,
-    meta_df: pd.DataFrame,
-    item_to_idx: dict[str, int],
-    idx_to_item: dict[int, str],
+    artefacts: tuple[Any, ...],
     n: int = DEFAULT_TOP_N,
 ) -> pd.DataFrame:
     """Find the top-N items most similar to a given item using cosine similarity.
 
     Args:
-        parent_asin: The ASIN of the seed item.
-        item_matrix: Sparse TF-IDF item matrix.
-        meta_df: Product metadata DataFrame.
-        item_to_idx: Mapping from parent_asin to item_matrix row index.
-        idx_to_item: Reverse mapping from index to parent_asin.
-        n: Number of similar items to return.
+    - parent_asin (str): The ASIN of the seed item
+    - artefacts (tuple): Loaded artefacts of the tool
+    - n (int): Number of similar items to return
 
     Returns:
-        DataFrame with columns: parent_asin, score, item_title, main_category.
-        Empty if the ASIN is not in the index.
+    - pd.DataFrame: A DataFrame with columns ["parent_asin", "score", "item_title",
+                    "main_category"]. Empty if the ASIN is not in the index.
 
     Raises:
-        ValueError: If n is not a positive integer.
+    - ValueError: If n is not a positive integer
     """
+    _, item_matrix, meta_df = artefacts
+    item_to_idx, idx_to_item = build_item_index_maps(meta_df)
+
     if n < 1:
         raise ValueError(f"n must be a positive integer, got {n}")
 
@@ -188,4 +208,5 @@ def similar_items(
     ).merge(meta_df[["parent_asin", "item_title", "main_category"]], on="parent_asin")
 
     logger.info("Returning %d similar items for ASIN: %s", len(result), parent_asin)
+
     return result

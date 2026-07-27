@@ -15,6 +15,11 @@ CATEGORY_BOOST: float = 0.1
 FREE_PREFERENCE_THRESHOLD: float = 0.5
 
 # ── Artefact Filenames ─────────────────────────────────────────────────────────────────────────
-TFIDF_FILENAME: str = "cb_tfidf.joblib"
-ITEM_MATRIX_FILENAME: str = "cb_item_matrix.npz"
-META_FILENAME: str = "cb_meta.parquet"
+MODEL_NAME: str = "content_based_filtering"
+MODEL_ID: str = "xxxxx"
+
+MODEL_ARTEFACTS = {
+    "tfidf_filename": "cb_tfidf.joblib",
+    "item_matrix_filename": "cb_item_matrix.npz",
+    "meta_filename": "cb_meta.parquet"
+}
