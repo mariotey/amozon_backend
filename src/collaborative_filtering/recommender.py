@@ -1,4 +1,6 @@
-"""Core recommendation logic for collaborative filtering."""
+"""
+Core recommendation logic for collaborative filtering.
+"""
 from typing import Any
 import logging
 import numpy as np
@@ -15,7 +17,8 @@ def recommend_for_user(
     artefacts: tuple[Any, ...],
     n: int = DEFAULT_TOP_N,
 ) -> list[str]:
-    """Generate top-N content-based recommendations for a user.
+    """
+    Generate top-N content-based recommendations for a user.
 
     Excludes already-seen items, boosts the user's preferred category,
     and optionally filters out paid items for users who prefer free software.

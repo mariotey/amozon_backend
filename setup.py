@@ -2,6 +2,7 @@
 Creates the required directory structure and artefacts
 """
 from data_loader import DataLoader
+from models_loader import ModelsLoader
 from config import (
     REPO_ROOT,
     DATA_DIR, DATA_INPUT_DIR, DATA_OUTPUT_DIR,
@@ -25,10 +26,11 @@ for directory in DIRECTORIES:
     print(f"✓ Created: {directory}")
 
 # Pull data from Supabase into local environment
-print("\nPulling data from Supabase Tables...")
+print("\nPulling tabular data from Supabase Tables...")
 data_obj = DataLoader()
 
 # Pull model artefacts from Supabase into local environment
-# models_obj = ModelLoader()
+print("\nPulling model artefacts from Supabase Tables...")
+models_obj = ModelsLoader()
 
 print("\nSetup complete!\n")

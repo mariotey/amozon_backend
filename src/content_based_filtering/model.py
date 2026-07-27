@@ -1,4 +1,6 @@
-"""TF-IDF model building, persistence, and loading for content-based filtering."""
+"""
+TF-IDF model building, persistence, and loading for content-based filtering.
+"""
 from typing import Any
 import logging
 import pandas as pd
@@ -15,7 +17,8 @@ logger = logging.getLogger(__name__)
 def build_item_text(
     row: Any
 ) -> str:
-    """Concatenate item title, description, and features into a single string.
+    """
+    Concatenate item title, description, and features into a single string.
 
     Args:
     - row (Any): A pandas Series representing one row of the metadata DataFrame.
@@ -38,7 +41,8 @@ def build_item_text(
 def build_and_save(
     item_df: pd.DataFrame
 ) -> None:
-    """Fit TF-IDF on the item corpus and persist all artifacts to disk.
+    """
+    Fit TF-IDF on the item corpus and persist all artifacts to disk.
 
     Args:
     - item_df (pd.DataFrame): A DataFrame containing the items

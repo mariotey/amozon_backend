@@ -1,4 +1,6 @@
-"""Core recommendation logic for content-based filtering."""
+"""
+Core recommendation logic for content-based filtering.
+"""
 from typing import Any
 import logging
 import numpy as np
@@ -21,7 +23,8 @@ def build_user_profile(
     item_matrix: scipy.sparse.csr_matrix,
     item_to_idx: dict[str, int],
 ) -> np.ndarray | None:
-    """Build a weighted TF-IDF profile vector for a user from their review history.
+    """
+    Build a weighted TF-IDF profile vector for a user from their review history.
 
     Args:
     - user_id (str): The user identifier
@@ -51,7 +54,8 @@ def build_user_profile(
 def build_item_index_maps(
     meta_df: pd.DataFrame
 ) -> tuple[dict[str, int], dict[int, str]]:
-    """Build mappings between item IDs and their corresponding matrix indices.
+    """
+    Build mappings between item IDs and their corresponding matrix indices.
 
     Args:
     - meta_df (pd.DataFrame): DataFrame containing a "parent_asin" column
@@ -78,7 +82,8 @@ def recommend_for_user(
     artefacts: tuple[Any, ...],
     n: int = DEFAULT_TOP_N,
 ) -> pd.DataFrame:
-    """Generate top-N content-based recommendations for a user.
+    """
+    Generate top-N content-based recommendations for a user.
 
     Excludes already-seen items, boosts the user's preferred category, and optionally filters out
     paid items for users who prefer free software.
@@ -169,7 +174,8 @@ def similar_items(
     artefacts: tuple[Any, ...],
     n: int = DEFAULT_TOP_N,
 ) -> pd.DataFrame:
-    """Find the top-N items most similar to a given item using cosine similarity.
+    """
+    Find the top-N items most similar to a given item using cosine similarity.
 
     Args:
     - parent_asin (str): The ASIN of the seed item

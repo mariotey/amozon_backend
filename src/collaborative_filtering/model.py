@@ -1,4 +1,6 @@
-"""ALS model building, persistence, and loading for collaborative filtering."""
+"""
+ALS model building, persistence, and loading for collaborative filtering.
+"""
 import pandas as pd
 import scipy.sparse
 from sklearn.preprocessing import MinMaxScaler

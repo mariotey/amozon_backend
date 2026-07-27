@@ -41,7 +41,8 @@ def get_user_recommendations(
     user_id: str,
     n: int = DEFAULT_TOP_N,
 ) -> list[dict[str, Any]]:
-    """Return top-N content-based recommendations for a user.
+    """
+    Return top-N content-based recommendations for a user.
 
     Designed to be called directly by an Azure Function HTTP trigger.
 
@@ -77,7 +78,8 @@ def get_similar_items(
     parent_asin: str,
     n: int = DEFAULT_TOP_N,
 ) -> list[dict[str, Any]]:
-    """Return top-N items most similar to the given ASIN.
+    """
+    Return top-N items most similar to the given ASIN.
 
     Designed to be called directly by an Azure Function HTTP trigger.
 
@@ -90,8 +92,8 @@ def get_similar_items(
                             "main_category"]. Returns an empty list if the ASIN is unknown.
 
     Raises:
-        ValueError: If parent_asin is empty or n is not a positive integer
-        FileNotFoundError: If model artifacts are not found on disk
+    - ValueError: If parent_asin is empty or n is not a positive integer
+    - FileNotFoundError: If model artifacts are not found on disk
     """
     if not parent_asin or not parent_asin.strip():
         raise ValueError("parent_asin must be a non-empty string")
@@ -108,7 +110,8 @@ def get_similar_items(
     return result.to_dict(orient="records")
 
 def build_model() -> None:
-    """Fit the TF-IDF model and persist all artifacts to disk.
+    """
+    Fit the TF-IDF model and persist all artifacts to disk.
 
     Raises:
     - FileNotFoundError: If source data files are missing
@@ -155,7 +158,8 @@ def _parse_args(
 def run_cli(
     argv: list[str] | None = None
 ) -> None:
-    """Parse CLI arguments and dispatch to the appropriate handler.
+    """
+    Parse CLI arguments and dispatch to the appropriate handler.
 
     Args:
     - argv (list[str] | None): Argument list (defaults to sys.argv when None)

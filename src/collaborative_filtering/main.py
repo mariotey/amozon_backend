@@ -90,7 +90,8 @@ def get_user_recommendations(
 # ── CLI wrapper (thin shell around the handler functions) ─────────────────────
 
 def build_model() -> None:
-    """Fit the ALS model and persist all artifacts to disk.
+    """
+    Fit the ALS model and persist all artifacts to disk.
 
     Raises:
     - FileNotFoundError: If source data files are missing
@@ -142,7 +143,8 @@ def _parse_args(
 def run_cli(
     argv: list[str] | None = None
 ) -> None:
-    """Entry point for CLI execution.
+    """
+    Entry point for CLI execution.
 
     Parse CLI arguments and dispatch to the appropriate handler.
 
