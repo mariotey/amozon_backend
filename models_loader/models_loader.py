@@ -207,5 +207,3 @@ class ModelsLoader:
             self.model_artefacts[tool] = model_artefacts
 
             print(f"\nArtefacts successfully loaded for `{tool}`!\n")
-
-    print("\nModel Artefacts successfully loaded!\n")

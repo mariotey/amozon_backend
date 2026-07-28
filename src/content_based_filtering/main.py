@@ -1,17 +1,18 @@
 """
 Inference handlers for the content-based filtering module.
 
-Exposes importable functions designed to be called directly by an Azure Function
-handler (or any other serverless runtime). Each handler is stateless — artifacts
-are loaded once at module import time so that warm invocations skip disk I/O.
+Exposes importable functions designed to be called directly by an Azure Function handler (or any
+other serverless runtime). Resource-intensive objects such as datasets and model artefacts are
+loaded lazily and cached in memory so that warm invocations avoid repeated disk I/O and
+deserialization overhead.
 
 Azure Function usage example:
     from content_based_filtering.main import get_user_recommendations, get_similar_items
 
 CLI usage (from repo root or src/):
-    python -m content_based_filtering.main --mode build
-    python -m content_based_filtering.main --mode user --user_id <id> --n 10
-    python -m content_based_filtering.main --mode item --asin <asin> --n 10
+    python -m src.content_based_filtering.main --mode build
+    python -m src.content_based_filtering.main --mode user --user_id <id> --n 10
+    python -m src.content_based_filtering.main --mode item --asin <asin> --n 10
 """
 import argparse
 import logging
@@ -22,7 +23,7 @@ from data_loader import DataLoader
 from models_loader import ModelsLoader
 from .model import build_and_save
 from .recommender import recommend_for_user, similar_items
-from .tool_config import DEFAULT_TOP_N, MODEL_NAME, MODEL_ARTEFACTS
+from .tool_config import DEFAULT_TOP_N, MODEL_NAME
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,7 +31,49 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-data_obj = DataLoader()
+_data_loader_obj: DataLoader | None = None
+_models_loader_obj: ModelsLoader | None = None
+
+def get_data_loader() -> DataLoader:
+    """"
+    Retrieve the cached data loader instance.
+
+    The data loader is initialized lazily on first invocation and reused across subsequent calls.
+    This avoids repeatedly loading datasets from local storage or external sources such as supabase
+    during warm runtime executions.
+
+    The cached instance can be invalidated by resetting the module-level cache variable, for
+    example after rebuilding model artefacts.
+
+    Returns:
+    - DataLoader: Cached data loader instance.
+    """
+    global _data_loader_obj
+
+    if _data_loader_obj is None:
+        _data_loader_obj = DataLoader()
+
+    return _data_loader_obj
+
+def get_models_loader() -> ModelsLoader:
+    """
+    Retrieve the cached model artefact loader instance.
+
+    The model loader is initialized lazily on first invocation and reused across subsequent calls
+    to avoid repeated model artefact loading and deserialization.
+
+    The cached instance can be invalidated after rebuilding model artefacts to ensure subsequent
+    inference requests load the latest versions.
+
+    Returns:
+    - ModelsLoader: Cached model artefact loader instance.
+    """
+    global _models_loader_obj
+
+    if _models_loader_obj is None:
+        _models_loader_obj = ModelsLoader()
+
+    return _models_loader_obj
 
 # ── Public handler functions (Azure Function entry points) ────────────────────
 
@@ -63,12 +106,13 @@ def get_user_recommendations(
 
     logger.info("Fetching recommendations for user: %s (n=%d)", user_id, n)
 
-    artefact_obj = ModelsLoader()
+    data_loader = get_data_loader()
+    artefact_loader = get_models_loader()
 
     recs: pd.DataFrame = recommend_for_user(
         user_id=user_id,
-        user_item_df=data_obj.user_item_df,
-        artefacts=artefact_obj.model_artefacts[MODEL_NAME],
+        user_item_df=data_loader.user_item_df,
+        artefacts=artefact_loader.model_artefacts[MODEL_NAME],
         n=n,
     )
     return recs.to_dict(orient="records")
@@ -101,28 +145,41 @@ def get_similar_items(
 
     logger.info("Fetching similar items for ASIN: %s (n=%d)", parent_asin, n)
 
-    artefact_obj = ModelsLoader()
+    artefact_loader = get_models_loader()
 
     result: pd.DataFrame = similar_items(
         parent_asin=parent_asin,
-        artefacts=artefact_obj.model_artefacts[MODEL_NAME],
+        artefacts=artefact_loader.model_artefacts[MODEL_NAME],
         n=n,
     )
     return result.to_dict(orient="records")
 
 def build_model() -> None:
     """
-    Fit the TF-IDF model and persist all artifacts to disk.
+    Build and persist the TF-IDF recommendation model.
+
+    Loads the required item metadata, trains the content-based filtering model, and saves all
+    generated model artefacts to the configured storage location.
+
+    After rebuilding, cached data and model loader instances are cleared so that subsequent
+    inference requests reload the latest artefacts.
 
     Raises:
-    - FileNotFoundError: If source data files are missing
-    - OSError: If artifacts cannot be written to disk
+    - FileNotFoundError: If required input datasets are unavailable.
+    - OSError: If model artefacts cannot be written to storage.
     """
+    global _data_loader_obj, _models_loader_obj
+
     logger.info("Starting model build")
 
+    data_loader = get_data_loader()
+
     build_and_save(
-        data_obj.item_df
+        data_loader.item_df
     )
+
+    _data_loader_obj = None
+    _models_loader_obj = None
 
     logger.info("Model build complete")
 
