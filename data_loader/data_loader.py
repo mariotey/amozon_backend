@@ -40,10 +40,12 @@ def load_data(
 
     except FileNotFoundError:
         print(f"`{supabase_tablename}` cannot be found in local drive.")
-        print(f"Fetching `{supabase_tablename}` from supabase and then saving into local drive...")
+        print(f"Fetching `{supabase_tablename}` from supabase...")
 
         df = extract_table_from_supabase(supabase_tablename)
         df.to_parquet(parquet_path, index=False)
+
+        print(f"Saved `{supabase_tablename}` into local drive.\n")
 
         return df
 

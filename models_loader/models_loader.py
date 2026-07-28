@@ -82,6 +82,7 @@ def save_local_artefacts(
     - None
     """
     tool_artefact_dir = MODEL_ARTEFACT_DIR / tool_name
+    tool_artefact_dir.mkdir(parents=True, exist_ok=True)
 
     for artefact, filename in zip(model_artefacts, model_artefacts_dict.values()):
         filepath = tool_artefact_dir / filename
@@ -161,49 +162,48 @@ def load_artefacts(
 
 class ModelsLoader:
     """
-    Dynamically discover and load model artefacts for every tool under the `src` directory.
-
-    Each tool is expected to define a `tool_config.py` containing:
-    - `MODEL_ID`: Unique identifier of the model stored in Supabase
-    - `MODEL_ARTEFACTS`: Mapping of artefact names to local filenames
-
-    Loaded artefacts are exposed as `model_artefacts` which is a dictionary containing the tool's
-    model artefacts.
+    Dynamically discover and load model artefacts for selected recommender tools.
 
     Attributes:
-    - model_artefacts: A dictionary with keys that are the names of the tools and its corresponding
-                       values is a tuple containing its loaded model artefacts in the order defined
-                       by `MODEL_ARTEFACTS`.
+    - model_artefacts:
+        Dictionary where keys are tool names and values are tuples containing
+        the loaded model artefacts in the order defined by each tool's
+        MODEL_ARTEFACTS configuration.
     """
+
     def __init__(
-        self
+        self,
+        tools: list[str] | None = None
     ) -> None:
         """
-        Initialise the model loader and load model artefacts for all configured tools.
+        Initialise the model loader and load artefacts for selected tools.
 
-        Dynamically discovers tools under the source directory that contain a "tool_config.py"
-        file. Each configuration module is imported to retrieve the corresponding model artefacts.
+        Args:
+        - tools (list[str] | None): List of tool names to load. If None, all configured tools with
+                                    a valid tool_config.py file will be loaded.
 
-        Loaded artefacts are stored in ``self.model_artefacts`` using the tool name as the
-        dictionary key.
+        Raises:
+        - ImportError: If a selected tool does not contain a valid tool_config module.
         """
         self.model_artefacts = {}
 
-        valid_tool_dir_dict = {}
+        # If no tools specified, load all available tools
+        selected_tools = tools if tools is not None else TOOLS
 
-        for tool in TOOLS:
-            tool_config_dir = REPO_ROOT / "src" / tool / "tool_config.py"
+        for tool in selected_tools:
+            tool_config_path = REPO_ROOT / "src" / tool / "tool_config.py"
 
-            if tool_config_dir.is_file():
-                valid_tool_dir_dict[tool] = tool_config_dir
+            if not tool_config_path.is_file():
+                raise FileNotFoundError(
+                    f"No tool_config.py found for tool '{tool}'"
+                )
 
-        for tool, config_dir in valid_tool_dir_dict.items():
-            # Load the tool's model artefacts using the configuration defined in its
-            # `tool_config.py`
-            model_artefacts = load_artefacts(
-                tool_config=importlib.import_module(f"src.{tool}.tool_config")
+            tool_config = importlib.import_module(
+                f"src.{tool}.tool_config"
             )
 
-            self.model_artefacts[tool] = model_artefacts
+            self.model_artefacts[tool] = load_artefacts(
+                tool_config=tool_config
+            )
 
             print(f"\nArtefacts successfully loaded for `{tool}`!\n")

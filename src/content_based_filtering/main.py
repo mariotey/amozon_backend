@@ -71,7 +71,9 @@ def get_models_loader() -> ModelsLoader:
     global _models_loader_obj
 
     if _models_loader_obj is None:
-        _models_loader_obj = ModelsLoader()
+        _models_loader_obj = ModelsLoader(
+            tools=[MODEL_NAME]
+        )
 
     return _models_loader_obj
 

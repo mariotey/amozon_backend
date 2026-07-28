@@ -5,8 +5,8 @@ from data_loader import DataLoader
 from models_loader import ModelsLoader
 from config import (
     REPO_ROOT,
-    DATA_DIR, DATA_INPUT_DIR, DATA_OUTPUT_DIR,
-    MODEL_ARTEFACT_DIR
+    DATA_DIR, DATA_INPUT_DIR, DATA_OUTPUT_DIR, MODEL_ARTEFACT_DIR,
+    TOOLS
 )
 
 # Directories required for the forecasting pipeline.
@@ -26,11 +26,11 @@ for directory in DIRECTORIES:
     print(f"✓ Created: {directory}")
 
 # Pull data from Supabase into local environment
-print("\nPulling tabular data from Supabase Tables...")
+print("\nPulling tabular data from Supabase Tables...\n")
 data_obj = DataLoader()
 
 # Pull model artefacts from Supabase into local environment
-print("\nPulling model artefacts from Supabase Tables...")
-models_obj = ModelsLoader()
+print("\nPulling model artefacts from Supabase Tables...\n")
+models_obj = ModelsLoader(tools=TOOLS)
 
 print("\nSetup complete!\n")

@@ -14,7 +14,8 @@ from tqdm import tqdm
 from config import (
     DATA_INPUT_DIR,
     DATASET_NAME, DATASET_CATEGORY,
-    USER_REVIEW_FILENAME, ITEM_META_FILENAME
+    USER_REVIEW_FILENAME, ITEM_META_FILENAME,
+    DATASET_SPLIT_PERCENTAGE
 )
 
 def parse_categories(
@@ -111,7 +112,7 @@ def parse_videos(
 review_dataset = load_dataset(
     DATASET_NAME,
     f"raw_review_{DATASET_CATEGORY}",
-    split="full[:5%]"
+    split=f"full[:{DATASET_SPLIT_PERCENTAGE}%]"
 )
 
 review_df = review_dataset.to_pandas()

@@ -23,6 +23,7 @@ MODEL_ARTEFACT_BUCKET: str = "ModelArtefacts"
 DATASET_NAME = "McAuley-Lab/Amazon-Reviews-2023"
 # NOTE: There are 33 categories + Unknown. Software is a subset.
 DATASET_CATEGORY = "Software"
+DATASET_SPLIT_PERCENTAGE = 5
 
 # Supabase Table Name
 USER_TABLE_NAME = "User"
