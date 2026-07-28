@@ -1,24 +1,27 @@
-import os
+"""
+Utilities for loading and managing recommender system model artefacts.
+
+This module provides functionality for reading, saving, and loading model artefacts required by
+recommender system tools. Model artefacts are loaded from local storage when available; otherwise,
+they are downloaded from supabase and cached locally.
+
+The module also provides "ModelsLoader", which dynamically discovers available recommender tools,
+loads their configurations, and retrieves the corresponding model artefacts.
+"""
 import pandas as pd
 import joblib
 import json
 import scipy.sparse
-import pkgutil
 import importlib
 from pathlib import Path
 from typing import Any
-from dotenv import load_dotenv
+from types import ModuleType
 from utils.supabase_utils import download_artefacts_from_supabase
 from config import (
     REPO_ROOT,
     MODEL_ARTEFACT_DIR,
     TOOLS
 )
-
-# Load environment variables
-load_dotenv()
-
-PRODUCTION_FLAG = os.getenv("PRODUCTION_FLAG", "false").lower() == "true"
 
 def read_local_artefacts(
     filename_dir: Path,
@@ -105,32 +108,34 @@ def save_local_artefacts(
     print("Artefacts successfully saved in local drive.\n")
 
 def load_artefacts(
-    tool_name: str,
-    model_id: str,
-    model_artefacts_dict: dict[str, str],
-    prod_flag: bool
+    tool_config: ModuleType
 ) -> tuple[Any, ...]:
     """
-    Load model artefacts for a given tool.
+    Load model artefacts for a configured recommender tool.
+
+    Retrieves model configuration from the provided "tool_config" module, including the tool name,
+    model identifier, and artefact mapping. The function first checks whether all expected
+    artefacts are available in the local cache. If any artefacts are missing, they are downloaded
+    from supabase and saved locally before being loaded.
 
     Args:
-    - tool_name (str): Name of the tool
-    - model_id (str): Unique identifier of the model stored in Supabase
-    - model_artefacts_dict (dict[str, str]): Mapping of artefact names to their corresponding local
-                                             filenames
-    - prod_flag (bool): Boolean flag of whether pipeline is in production mode
+    - tool_config (module): Tool configuration module containing:
+        - MODEL_NAME (str): Name of the recommender tool
+        - MODEL_ID (str): Unique identifier of the model stored in Supabase
+        - MODEL_ARTEFACTS (dict[str, str]): Mapping of artefact names to their corresponding
+                                            filenames
 
     Returns:
-    - tuple[Any, ...]: Loaded model artefacts in the same order as `model_artefacts_dict.values()`
+    - tuple[Any, ...]: Loaded model artefacts in the same order as defined by
+                       `MODEL_ARTEFACTS.values()`
     """
+    tool_name = tool_config.MODEL_NAME
+    model_id = tool_config.MODEL_ID
+    model_artefacts_dict = tool_config.MODEL_ARTEFACTS
+
     # Directory containing the tool's model artefacts.
     tool_artefact_dir = MODEL_ARTEFACT_DIR / tool_name
     tool_artefact_dir.mkdir(parents=True, exist_ok=True)
-
-    # Production always retrieves artefacts from Supabase.
-    if prod_flag:
-        download_artefacts_from_supabase(tool_name, model_id, model_artefacts_dict)
-        return read_local_artefacts(tool_artefact_dir, model_artefacts_dict)
 
     # Check whether all expected artefacts exist locally.
     missing_files = [
@@ -159,8 +164,7 @@ def load_artefacts(
 
 class ModelsLoader:
     """
-    Dynamically discover and load model artefacts for every tool under
-    the `src` directory.
+    Dynamically discover and load model artefacts for every tool under the `src` directory.
 
     Each tool is expected to define a `tool_config.py` containing:
     - `MODEL_ID`: Unique identifier of the model stored in Supabase
@@ -175,15 +179,16 @@ class ModelsLoader:
                        by `MODEL_ARTEFACTS`.
     """
     def __init__(
-        self,
-        prod_flag: bool = PRODUCTION_FLAG,
-    ):
+        self
+    ) -> None:
         """
-        Initialise the model loader and load artefacts for all available tools.
+        Initialise the model loader and load model artefacts for all configured tools.
 
-        Args:
-            prod_flag (bool): Whether to always retrieve the latest model artefacts from supabase.
-                              If `False`, locally cached artefacts are used whenever available.
+        Dynamically discovers tools under the source directory that contain a "tool_config.py"
+        file. Each configuration module is imported to retrieve the corresponding model artefacts.
+
+        Loaded artefacts are stored in ``self.model_artefacts`` using the tool name as the
+        dictionary key.
         """
         self.model_artefacts = {}
 
@@ -196,15 +201,10 @@ class ModelsLoader:
                 valid_tool_dir_dict[tool] = tool_config_dir
 
         for tool, config_dir in valid_tool_dir_dict.items():
-            config_module = importlib.import_module(f"src.{tool}.tool_config")
-
             # Load the tool's model artefacts using the configuration defined in its
             # `tool_config.py`
             model_artefacts = load_artefacts(
-                tool_name=tool,
-                model_id = config_module.MODEL_ID,
-                model_artefacts_dict=config_module.MODEL_ARTEFACTS,
-                prod_flag=prod_flag,
+                tool_config=importlib.import_module(f"src.{tool}.tool_config")
             )
 
             self.model_artefacts[tool] = model_artefacts

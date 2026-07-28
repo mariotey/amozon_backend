@@ -1,3 +1,11 @@
+"""
+Feature engineering pipeline for recommender system datasets.
+
+This module loads raw user review and item metadata datasets, performs data cleaning, feature
+extraction, aggregation, and transformation, and exports processed datasets for downstream
+recommender system models.
+"""
+from typing import Any
 import os
 import numpy as np
 import pandas as pd
@@ -9,22 +17,63 @@ from config import (
     USER_ITEM_INTERACT_FILENAME, USER_FILENAME, ITEM_FILENAME
 )
 
-# Extract metadata features
-def safe_len(x):
-    """Safely get length of arrays"""
+def safe_len(
+    x: Any
+) -> int:
+    """
+    Return the number of unique elements in a list-like object.
+
+    If the input is a list or NumPy array, duplicate elements are removed before counting. All
+    other input types return ``0``.
+
+    Args:
+    - x (Any): Object to compute the length of
+
+    Returns:
+    - int: Number of unique elements if the input is a list or NumPy array, otherwise ``0``
+    """
     if isinstance(x, (list, np.ndarray)):
         # Drop duplicated elements in the list
         return len(set(x))
     return 0
 
-def safe_join(x):
+def safe_join(
+    x: Any
+) -> str:
+    """
+    Convert a value into a comma-separated string.
+
+    Lists and NumPy arrays are joined into a comma-separated string after excluding ``None``
+    values. Empty collections return an empty string. Scalar values are converted to strings,
+    while missing values return an empty string.
+
+    Args:
+    - x (Any): Value to convert into a string
+
+    Returns:
+    - str: Comma-separated string representation of the input
+    """
     if isinstance(x, (list, np.ndarray)):
         if len(x) == 0:
             return ''
         return ','.join([str(i) for i in x if i is not None])
     return '' if pd.isna(x) else str(x)
 
-def safe_json_numpy(x):
+def safe_json_numpy(
+    x: Any
+) -> str:
+    """Serialize NumPy-compatible objects into a JSON string.
+
+    Dictionaries containing NumPy arrays, NumPy arrays, and Python lists are converted into JSON
+    strings. Missing values return an empty string, while other objects are converted into ``str``.
+
+    Args:
+    - x (Any): Object to serialize
+
+    Returns:
+    - str: JSON string representation of the input, or its string representation for unsupported
+           types
+    """
     if isinstance(x, dict):
         return json.dumps({k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in x.items()})
     elif isinstance(x, np.ndarray):
@@ -32,6 +81,63 @@ def safe_json_numpy(x):
     elif isinstance(x, (list)):
         return json.dumps(x)
     return '' if pd.isna(x) else str(x)
+
+def count_review_images(
+    image_list: Any
+) -> int | float:
+    """
+    Count the number of review images.
+
+    Supports lists of image references and string representations of Python lists. Missing values
+    return ``np.nan``. If the input cannot be parsed, ``0`` is returned.
+
+    Args:
+    - image_list (Any): Collection or string representation of review images
+
+    Returns:
+    - int | float: Number of images if determinable, ``np.nan`` for missing values, or ``0`` if
+                   parsing fails
+    """
+    if isinstance(image_list, list):
+        return len(image_list)
+    elif pd.isna(image_list):
+        return np.nan
+    else:
+        # If it"s not a list (maybe a string or other type), try to convert
+        try:
+            if isinstance(image_list, str):
+                parsed = ast.literal_eval(image_list)
+                return len(parsed) if isinstance(parsed, list) else 1
+            else:
+                return 1
+        except:
+            return 0
+
+def wilson_lower_bound(
+    pos: int | float,
+    n: int,
+    confidence: float = 0.95
+) -> float:
+    """
+    Compute the Wilson lower confidence bound for a proportion.
+
+    The Wilson lower bound provides a conservative estimate of the true proportion of positive
+    observations and is commonly used to rank items based on both their rating and the number of
+    observations.
+
+    Args:
+    - pos (int | float): Number of positive observations
+    - n (int): Total number of observations
+    - confidence (float): Confidence level of the interval. Defaults to 0.95
+
+    Returns:
+    - float: Wilson lower confidence bound. Returns 0 if there are no observations
+    """
+    if n == 0:
+        return 0
+    z = 1.96  # 95% confidence
+    phat = pos / n
+    return (phat + z*z/(2*n) - z * np.sqrt((phat*(1-phat)+z*z/(4*n))/n))/(1+z*z/n)
 
 #################################################################################################
 # Import Data
@@ -61,25 +167,7 @@ modified_review_df["is_positive"] = modified_review_df["review_rating"] >= 4.0
 modified_review_df["is_negative"] = modified_review_df["review_rating"] <= 2.0
 
 # Image counts
-def count_review_images(image_list):
-    """Safely count number of images"""
-    if isinstance(image_list, list):
-        return len(image_list)
-    elif pd.isna(image_list):
-        return np.nan
-    else:
-        # If it"s not a list (maybe a string or other type), try to convert
-        try:
-            if isinstance(image_list, str):
-                parsed = ast.literal_eval(image_list)
-                return len(parsed) if isinstance(parsed, list) else 1
-            else:
-                return 1
-        except:
-            return 0
-
 modified_review_df["num_review_img"] = modified_review_df["review_images"].apply(count_review_images)
-
 modified_review_df["review_images"] = modified_review_df["review_images"].apply(safe_join)
 
 # -------------------- TEMPORAL FEATURES --------------------
@@ -321,14 +409,6 @@ item_df["popularity_segment"] = pd.cut(
 )
 
 # Quality score (Wilson lower bound for rating confidence)
-def wilson_lower_bound(pos, n, confidence=0.95):
-    """Wilson score interval for rating confidence"""
-    if n == 0:
-        return 0
-    z = 1.96  # 95% confidence
-    phat = pos / n
-    return (phat + z*z/(2*n) - z * np.sqrt((phat*(1-phat)+z*z/(4*n))/n))/(1+z*z/n)
-
 item_df["quality_score"] = item_df.apply(
     lambda row: wilson_lower_bound(
         row["positive_review_ratio"] * row["num_reviews"],

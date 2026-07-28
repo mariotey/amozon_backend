@@ -1,3 +1,10 @@
+"""
+Download, preprocess, and export the Amazon Software review datasets.
+
+This module downloads the Amazon Software review and product metadata datasets from the Hugging
+Face Hub, performs data cleaning and normalization, and exports the processed datasets as Parquet
+files for downstream recommender system pipelines.
+"""
 import os
 import pandas as pd
 from datasets import load_dataset
@@ -9,6 +16,74 @@ from config import (
     DATASET_NAME, DATASET_CATEGORY,
     USER_REVIEW_FILENAME, ITEM_META_FILENAME
 )
+
+def parse_categories(
+    cat_str: str
+) -> list[str]:
+    """
+    Parse and normalize a string representation of a category list.
+
+    Converts a stringified Python list into a sorted list of normalized category names. Category
+    names are converted to lowercase, possessive suffixes ("'s") are removed, and known category
+    aliases are replaced according to ``category_replace_dict``.
+
+    If the input is missing or represents an empty list, an empty list is returned. If parsing
+    fails, the original input is returned as a single-element list.
+
+    Args:
+    - cat_str (str): String representation of a list of category names
+
+    Returns:
+    - list[str]: Sorted list of normalized category names. Returns an empty list for missing or
+                 empty inputs, or a single-element list containing the original input if parsing
+                 fails.
+    """
+    if pd.isna(cat_str) or cat_str.strip() == "[]":
+        return []
+    try:
+        parsed_list = ast.literal_eval(cat_str)
+
+        modified_list = []
+
+        for elem in parsed_list:
+            modified_elem = (
+                elem
+                .lower()
+                .replace("\'s", "")
+            )
+
+            if modified_elem in category_replace_dict.keys():
+                modified_list.append(category_replace_dict[modified_elem])
+            else:
+                modified_list.append(modified_elem)
+
+        return sorted(modified_list)
+
+    except Exception as e:
+        print(f"{e}: {cat_str}")
+        return [cat_str]
+
+def parse_videos(
+    video_dict: dict[str, list[str]]
+) -> dict[str, list[str]]:
+    """
+    Normalize empty video entries in a video metadata dictionary.
+
+    Replaces placeholder values of ``[""]`` with empty lists so that missing video data is
+    represented consistently.
+
+    Args:
+    - video_dict (dict[str, list[str]]): Dictionary mapping video metadata fields to lists of
+                                         video values
+
+    Returns:
+    - dict[str, list[str]]: The same dictionary with any ``[""]`` values replaced by empty lists
+    """
+    for key, val in video_dict.items():
+        if val == [""]:
+            video_dict[key] = []
+
+    return video_dict
 
 #######################################################################################################
 # Data Fields for User Reviews
@@ -112,40 +187,6 @@ category_replace_dict = {
     "spreadsheet": "spreadsheet & database",
     "training": "training & tutorials"
 }
-
-def parse_categories(cat_str):
-    """Parse string representation of list into actual list"""
-    if pd.isna(cat_str) or cat_str.strip() == "[]":
-        return []
-    try:
-        parsed_list = ast.literal_eval(cat_str)
-
-        modified_list = []
-
-        for elem in parsed_list:
-            modified_elem = (
-                elem
-                .lower()
-                .replace("\'s", "")
-            )
-
-            if modified_elem in category_replace_dict.keys():
-                modified_list.append(category_replace_dict[modified_elem])
-            else:
-                modified_list.append(modified_elem)
-
-        return sorted(modified_list)
-
-    except Exception as e:
-        print(f"{e}: {cat_str}")
-        return [cat_str]
-
-def parse_videos(video_dict):
-    for key, val in video_dict.items():
-        if val == [""]:
-            video_dict[key] = []
-
-    return video_dict
 
 meta_df["parent_asin"] = meta_df["parent_asin"].str.lower()
 meta_df["title"] = meta_df["title"].str.strip().str.lower()
