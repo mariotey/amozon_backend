@@ -30,10 +30,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Module-level artifact cache (loaded once per warm container) ──────────────
-
 data_obj = DataLoader()
-artefact_obj = ModelsLoader()
 
 # ── Public handler functions (Azure Function entry points) ────────────────────
 
@@ -65,6 +62,8 @@ def get_user_recommendations(
         raise ValueError(f"n must be a positive integer, got {n}")
 
     logger.info("Fetching recommendations for user: %s (n=%d)", user_id, n)
+
+    artefact_obj = ModelsLoader()
 
     recs: pd.DataFrame = recommend_for_user(
         user_id=user_id,
@@ -101,6 +100,8 @@ def get_similar_items(
         raise ValueError(f"n must be a positive integer, got {n}")
 
     logger.info("Fetching similar items for ASIN: %s (n=%d)", parent_asin, n)
+
+    artefact_obj = ModelsLoader()
 
     result: pd.DataFrame = similar_items(
         parent_asin=parent_asin,

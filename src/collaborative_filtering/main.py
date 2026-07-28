@@ -29,10 +29,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Module-level artifact cache (loaded once per warm container) ──────────────
-
 data_obj = DataLoader()
-artefact_obj = ModelsLoader()
 
 # ── Public handler functions (Azure Function entry points) ────────────────────
 
@@ -65,6 +62,8 @@ def get_user_recommendations(
         raise ValueError(f"n must be a positive integer, got {n}")
 
     logger.info("Fetching recommendations for user: %s (n=%d)", user_id, n)
+
+    artefact_obj = ModelsLoader()
 
     # Core recommendation logic, returns a list of item parent_asin
     recs_ids: list[str] = recommend_for_user(

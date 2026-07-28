@@ -6,7 +6,7 @@ from pathlib import Path
 MODEL_NAME: str = Path(__file__).parent.name
 
 # ── Artefact Filenames ─────────────────────────────────────────────────────────────────────────
-MODEL_ID: str = "xxxxx"
+MODEL_ID: str = "9139d794-f9b3-4188-9370-33ceb92111fd"
 
 MODEL_ARTEFACTS = {
     "als_model_filename": "als_model.joblib",

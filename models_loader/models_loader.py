@@ -145,10 +145,7 @@ def load_artefacts(
     ]
 
     if missing_files:
-        print(
-            f"Missing {len(missing_files)} artefacts for `{tool_name}`. "
-            "Fetching models from supabase and then saving into local drive..."
-        )
+        print(f"Missing {len(missing_files)} artefacts for `{tool_name}`. ")
 
         # Download the latest artefacts and cache them locally.
         download_artefacts_from_supabase(tool_name, model_id, model_artefacts_dict)

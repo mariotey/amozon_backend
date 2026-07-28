@@ -50,4 +50,4 @@ for tool_dir in MODEL_ARTEFACT_DIR.iterdir():
 
         push_artefacts_into_supabase(tool_dir, model_artefacts_dict, storage_path)
 
-    print("Successful push of Model artefacts into supabase!")
+    print("\nSuccessful push of Model artefacts into supabase!\n")

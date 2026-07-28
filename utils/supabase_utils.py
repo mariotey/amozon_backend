@@ -44,13 +44,13 @@ def push_table_into_supabase(
 
     iterator = range(0, len(records), batch_size)
     if show_progress:
-        iterator = tqdm(iterator, desc=f"Uploading to {table_name}")
+        iterator = tqdm(iterator, desc=f"Uploading to `{table_name}`")
 
     for start in iterator:
         batch = records[start:start + batch_size]
         SUPABASE_CLIENT.table(table_name).insert(batch).execute()
 
-    print(f"Successfully uploaded {len(records):,} records to '{table_name}'.")
+    print(f"Successfully uploaded {len(records):,} records to `{table_name}`.")
 
 def extract_table_from_supabase(
     table_name: str,
@@ -74,7 +74,7 @@ def extract_table_from_supabase(
 
     pbar = tqdm(
         unit="rows",
-        desc=f"Fetching from \"{table_name}\" ",
+        desc=f"Fetching from `{table_name}` ",
         disable=not show_progress,
     )
 
@@ -236,7 +236,7 @@ def download_artefacts_from_supabase(
     - model_artefacts_dict (dict[str, str]): Mapping of artefact names to their filenames
     """
     try:
-        print(f"Fetching {model_id} models for `{tool_name}` from supabase...\n")
+        print(f"Fetching `{model_id}` models for `{tool_name}` from supabase...\n")
 
         response = (
             SUPABASE_CLIENT.table(MODELREGISTRY_TABLE_NAME)
@@ -248,7 +248,7 @@ def download_artefacts_from_supabase(
         )
 
     except Exception as e:
-        print(f"{e}: {model_id} models for `{tool_name}` cannot be loaded.")
+        print(f"{model_id} models for `{tool_name}` cannot be loaded: {e}\n")
         print(f"Fetching latest models for `{tool_name}` from supabase...\n")
 
         response = (
@@ -266,7 +266,7 @@ def download_artefacts_from_supabase(
         remote_path = f"{storage_path}/{filename}"
         local_path = MODEL_ARTEFACT_DIR / tool_name / filename
 
-        print(f"Downloading '{remote_path}'...")
+        print(f"Downloading \"{remote_path}\"...")
 
         file_bytes = ARTEFACTS_STORAGE.download(remote_path)
 

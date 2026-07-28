@@ -34,12 +34,12 @@ def load_data(
     parquet_path = DATA_OUTPUT_DIR / local_filename
 
     try:
-        print(f"Reading `{supabase_tablename}` from local drive...\n")
+        print(f"Reading `{supabase_tablename}` from local drive...")
 
         return pd.read_parquet(parquet_path)
 
     except FileNotFoundError:
-        print(f"{supabase_tablename} cannot be found in local drive.")
+        print(f"`{supabase_tablename}` cannot be found in local drive.")
         print(f"Fetching `{supabase_tablename}` from supabase and then saving into local drive...")
 
         df = extract_table_from_supabase(supabase_tablename)
