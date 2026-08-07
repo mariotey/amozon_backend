@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 _data_loader_obj: DataLoader | None = None
 _models_loader_obj: ModelsLoader | None = None
 
-def get_data_loader() -> DataLoader:
+def get_data_loader(force_remote: bool = False) -> DataLoader:
     """"
     Retrieve the cached data loader instance.
 
@@ -44,17 +44,22 @@ def get_data_loader() -> DataLoader:
     The cached instance can be invalidated by resetting the module-level cache variable, for
     example after rebuilding model artefacts.
 
+    Args:
+    - force_remote (bool): Only applies on the call that creates the cached instance. If True,
+                           datasets are always pulled fresh from supabase instead of the local
+                           cache. Ignored once the instance already exists.
+
     Returns:
     - DataLoader: Cached data loader instance.
     """
     global _data_loader_obj
 
     if _data_loader_obj is None:
-        _data_loader_obj = DataLoader()
+        _data_loader_obj = DataLoader(force_remote=force_remote)
 
     return _data_loader_obj
 
-def get_models_loader() -> ModelsLoader:
+def get_models_loader(force_remote: bool = False) -> ModelsLoader:
     """
     Retrieve the cached model artefact loader instance.
 
@@ -64,6 +69,11 @@ def get_models_loader() -> ModelsLoader:
     The cached instance can be invalidated after rebuilding model artefacts to ensure subsequent
     inference requests load the latest versions.
 
+    Args:
+    - force_remote (bool): Only applies on the call that creates the cached instance. If True,
+                           artefacts are always pulled fresh from supabase instead of the local
+                           cache. Ignored once the instance already exists.
+
     Returns:
     - ModelsLoader: Cached model artefact loader instance.
     """
@@ -71,7 +81,8 @@ def get_models_loader() -> ModelsLoader:
 
     if _models_loader_obj is None:
         _models_loader_obj = ModelsLoader(
-            tools=[MODEL_NAME]
+            tools=[MODEL_NAME],
+            force_remote=force_remote
         )
 
     return _models_loader_obj
@@ -108,8 +119,8 @@ def get_user_recommendations(
 
     logger.info("Fetching recommendations for user: %s (n=%d)", user_id, n)
 
-    data_loader = get_data_loader()
-    artefact_loader = get_models_loader()
+    data_loader = get_data_loader(force_remote=True)
+    artefact_loader = get_models_loader(force_remote=True)
 
     # Core recommendation logic, returns a list of item parent_asin
     recs_ids: list[str] = recommend_for_user(

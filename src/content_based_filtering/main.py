@@ -6,6 +6,8 @@ other serverless runtime). Resource-intensive objects such as datasets and model
 loaded lazily and cached in memory so that warm invocations avoid repeated disk I/O and
 deserialization overhead.
 
+python -m src.content_based_filtering.main --mode user --user_id ag6hllxrsby3efcfgqgjxvjabvfq --n 10
+
 Azure Function usage example:
     from content_based_filtering.main import get_user_recommendations, get_similar_items
 
@@ -34,7 +36,7 @@ logger = logging.getLogger(__name__)
 _data_loader_obj: DataLoader | None = None
 _models_loader_obj: ModelsLoader | None = None
 
-def get_data_loader() -> DataLoader:
+def get_data_loader(force_remote: bool = False) -> DataLoader:
     """"
     Retrieve the cached data loader instance.
 
@@ -45,17 +47,22 @@ def get_data_loader() -> DataLoader:
     The cached instance can be invalidated by resetting the module-level cache variable, for
     example after rebuilding model artefacts.
 
+    Args:
+    - force_remote (bool): Only applies on the call that creates the cached instance. If True,
+                           datasets are always pulled fresh from supabase instead of the local
+                           cache. Ignored once the instance already exists.
+
     Returns:
     - DataLoader: Cached data loader instance.
     """
     global _data_loader_obj
 
     if _data_loader_obj is None:
-        _data_loader_obj = DataLoader()
+        _data_loader_obj = DataLoader(force_remote=force_remote)
 
     return _data_loader_obj
 
-def get_models_loader() -> ModelsLoader:
+def get_models_loader(force_remote: bool = False) -> ModelsLoader:
     """
     Retrieve the cached model artefact loader instance.
 
@@ -65,6 +72,11 @@ def get_models_loader() -> ModelsLoader:
     The cached instance can be invalidated after rebuilding model artefacts to ensure subsequent
     inference requests load the latest versions.
 
+    Args:
+    - force_remote (bool): Only applies on the call that creates the cached instance. If True,
+                           artefacts are always pulled fresh from supabase instead of the local
+                           cache. Ignored once the instance already exists.
+
     Returns:
     - ModelsLoader: Cached model artefact loader instance.
     """
@@ -72,7 +84,8 @@ def get_models_loader() -> ModelsLoader:
 
     if _models_loader_obj is None:
         _models_loader_obj = ModelsLoader(
-            tools=[MODEL_NAME]
+            tools=[MODEL_NAME],
+            force_remote=force_remote
         )
 
     return _models_loader_obj
@@ -100,6 +113,18 @@ def get_user_recommendations(
     Raises:
     - ValueError: If user_id is empty or n is not a positive integer
     - FileNotFoundError: If model artifacts are not found on disk
+
+    Notes:
+    - A user returns an empty list when they have no "qualifying history", i.e. no reviews
+      with `review_rating >= MIN_RATING_THRESHOLD` (default 3, see `tool_config.py`). The
+      user's taste profile is built from positively-rated items only; with none, there is no
+      profile vector to score candidates against and `recommend_for_user` returns an empty
+      DataFrame (see `src/content_based_filtering/recommender.py`).
+    - Example: `user_id="agci7fah4gl5fi65hylkwtmfz2cq"` has a single review rated 1.0, so
+      `is_positive == False` and the call logs
+      `No positive history found for user: agci7fah4gl5fi65hylkwtmfz2cq` and returns `[]`.
+      By contrast `user_id="ag6hllxrsby3efcfgqgjxvjabvfq"` (176 positive reviews) returns
+      the full top-N list.
     """
     if not user_id or not user_id.strip():
         raise ValueError("user_id must be a non-empty string")
@@ -108,8 +133,8 @@ def get_user_recommendations(
 
     logger.info("Fetching recommendations for user: %s (n=%d)", user_id, n)
 
-    data_loader = get_data_loader()
-    artefact_loader = get_models_loader()
+    data_loader = get_data_loader(force_remote=True)
+    artefact_loader = get_models_loader(force_remote=True)
 
     recs: pd.DataFrame = recommend_for_user(
         user_id=user_id,
@@ -147,7 +172,7 @@ def get_similar_items(
 
     logger.info("Fetching similar items for ASIN: %s (n=%d)", parent_asin, n)
 
-    artefact_loader = get_models_loader()
+    artefact_loader = get_models_loader(force_remote=True)
 
     result: pd.DataFrame = similar_items(
         parent_asin=parent_asin,

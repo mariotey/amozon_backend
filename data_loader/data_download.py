@@ -14,7 +14,7 @@ from tqdm import tqdm
 from config import (
     DATA_INPUT_DIR,
     DATASET_NAME, DATASET_CATEGORY,
-    USER_REVIEW_FILENAME, ITEM_META_FILENAME,
+    USER_REVIEW_FILENAME, ITEM_METADATA_FILENAME,
     DATASET_SPLIT_PERCENTAGE
 )
 
@@ -234,6 +234,6 @@ os.makedirs(DATA_INPUT_DIR, exist_ok=True)
 
 # Export Data
 review_df.to_parquet(DATA_INPUT_DIR / USER_REVIEW_FILENAME, index=False)
-meta_df.to_parquet(DATA_INPUT_DIR/ ITEM_META_FILENAME, index=False)
+meta_df.to_parquet(DATA_INPUT_DIR/ ITEM_METADATA_FILENAME, index=False)
 
 print("Data Loaded")

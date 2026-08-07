@@ -109,7 +109,8 @@ def save_local_artefacts(
     print("Artefacts successfully saved in local drive.\n")
 
 def load_artefacts(
-    tool_config: ModuleType
+    tool_config: ModuleType,
+    force_remote: bool = False
 ) -> tuple[Any, ...]:
     """
     Load model artefacts for a configured recommender tool.
@@ -125,6 +126,8 @@ def load_artefacts(
         - MODEL_ID (str): Unique identifier of the model stored in Supabase
         - MODEL_ARTEFACTS (dict[str, str]): Mapping of artefact names to their corresponding
                                             filenames
+    - force_remote (bool): If True, skip the local cache check and always re-download every
+                           artefact from supabase, refreshing the local cache. Default False.
 
     Returns:
     - tuple[Any, ...]: Loaded model artefacts in the same order as defined by
@@ -145,8 +148,11 @@ def load_artefacts(
         if not (tool_artefact_dir / filename).exists()
     ]
 
-    if missing_files:
-        print(f"Missing {len(missing_files)} artefacts for `{tool_name}`. ")
+    if force_remote or missing_files:
+        if force_remote:
+            print(f"Fetching latest artefacts for `{tool_name}` from supabase...")
+        else:
+            print(f"Missing {len(missing_files)} artefacts for `{tool_name}`. ")
 
         # Download the latest artefacts and cache them locally.
         download_artefacts_from_supabase(tool_name, model_id, model_artefacts_dict)
@@ -173,7 +179,8 @@ class ModelsLoader:
 
     def __init__(
         self,
-        tools: list[str] | None = None
+        tools: list[str] | None = None,
+        force_remote: bool = False
     ) -> None:
         """
         Initialise the model loader and load artefacts for selected tools.
@@ -181,6 +188,8 @@ class ModelsLoader:
         Args:
         - tools (list[str] | None): List of tool names to load. If None, all configured tools with
                                     a valid tool_config.py file will be loaded.
+        - force_remote (bool): If True, skip the local cache check and always re-download every
+                               tool's artefacts from supabase. Default False.
 
         Raises:
         - ImportError: If a selected tool does not contain a valid tool_config module.
@@ -203,7 +212,8 @@ class ModelsLoader:
             )
 
             self.model_artefacts[tool] = load_artefacts(
-                tool_config=tool_config
+                tool_config=tool_config,
+                force_remote=force_remote
             )
 
             print(f"\nArtefacts successfully loaded for `{tool}`!\n")
