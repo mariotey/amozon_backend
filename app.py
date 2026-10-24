@@ -125,46 +125,6 @@ def user_recommendations(
         return result
 
 
-@app.get("/api/v1/randomusers")
-def random_users(n: int = Query(5, ge=1, le=100)) -> list[dict[str, Any]]:
-    """Sample distinct shoppers with review history, up to the available count."""
-    users = collaborative.get_data_loader().user_item_df["user_id"].dropna().drop_duplicates()
-    return [{"user_id": str(user)} for user in users.sample(n=min(n, len(users)))]
-
-
-@app.get("/api/v1/users/{user_id}")
-def user_details(user_id: str) -> dict[str, Any]:
-    """Fetch a shopper's prepared profile from Supabase without loading all users."""
-    user_id = _validate_identifier(user_id)
-    response = (
-        SUPABASE_CLIENT.table(USER_TABLE_NAME)
-        .select(
-            "user_id,num_reviews,avg_rating_given,min_rating_given,max_rating_given,"
-            "first_review_date,last_review_date,days_active,user_segment,"
-            "num_verified_purchases,verified_purchase_ratio,avg_price_purchased,"
-            "free_app_ratio,total_helpful_votes_received"
-        )
-        .eq("user_id", user_id)
-        .limit(1)
-        .execute()
-    )
-    if not response.data:
-        raise HTTPException(status_code=404, detail="User not found")
-    return _serialize_items(response.data)[0]
-
-
-# Register the static popular path before the dynamic product path.
-@app.get("/api/v1/items/popular")
-def popular_items(limit: int = Query(5, ge=1, le=100)) -> list[dict[str, Any]]:
-    """Rank by review count, then average rating, with stable product-ID ties."""
-    catalogue = collaborative.get_data_loader().item_df
-    ranked = catalogue.sort_values(
-        ["num_reviews", "avg_rating", "parent_asin"],
-        ascending=[False, False, True], na_position="last",
-    )
-    return _serialize_items(ranked.head(limit)[CARD_FIELDS].to_dict(orient="records"))
-
-
 @app.get("/api/v1/items/{parent_asin}")
 def item_details(parent_asin: str) -> dict[str, Any]:
     """Return product card and detail-page metadata, or 404 for an unknown ID."""
@@ -200,3 +160,46 @@ def item_reviews(
         "page": page, "page_size": page_size,
         "total_count": total, "page_count": (total + page_size - 1) // page_size,
     }
+
+
+@app.get("/api/v1/users/{user_id}")
+def user_details(user_id: str) -> dict[str, Any]:
+    """Fetch a shopper's prepared profile from Supabase without loading all users."""
+    user_id = _validate_identifier(user_id)
+    response = (
+        SUPABASE_CLIENT.table(USER_TABLE_NAME)
+        .select(
+            "user_id,num_reviews,avg_rating_given,min_rating_given,max_rating_given,"
+            "first_review_date,last_review_date,days_active,user_segment,"
+            "num_verified_purchases,verified_purchase_ratio,avg_price_purchased,"
+            "free_app_ratio,total_helpful_votes_received"
+        )
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if not response.data:
+        raise HTTPException(status_code=404, detail="User not found")
+    return _serialize_items(response.data)[0]
+
+#################################################################################################
+# Helper Endpoints for Frontend
+#################################################################################################
+
+@app.get("/api/v1/randomusers")
+def random_users(n: int = Query(5, ge=1, le=100)) -> list[dict[str, Any]]:
+    """Sample distinct shoppers with review history, up to the available count."""
+    users = collaborative.get_data_loader().user_item_df["user_id"].dropna().drop_duplicates()
+    return [{"user_id": str(user)} for user in users.sample(n=min(n, len(users)))]
+
+
+# Register the static popular path before the dynamic product path.
+@app.get("/api/v1/items/popular")
+def popular_items(limit: int = Query(5, ge=1, le=100)) -> list[dict[str, Any]]:
+    """Rank by review count, then average rating, with stable product-ID ties."""
+    catalogue = collaborative.get_data_loader().item_df
+    ranked = catalogue.sort_values(
+        ["num_reviews", "avg_rating", "parent_asin"],
+        ascending=[False, False, True], na_position="last",
+    )
+    return _serialize_items(ranked.head(limit)[CARD_FIELDS].to_dict(orient="records"))
