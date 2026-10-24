@@ -1,9 +1,9 @@
 """
 Inference handlers for the collaborative filtering module.
 
-Importable handlers used by the FastAPI application and CLI. FastAPI startup
-provides shared data/model resources; standalone calls load and cache resources
-lazily. Model builds save local artifacts and reset this module's caches.
+Importable handlers used by the FastAPI application and CLI. API calls supply
+trained artifacts and a targeted metadata loader. Standalone calls load and cache
+full resources lazily. Model builds save local artifacts and reset caches.
 
 Python usage:
     from src.collaborative_filtering.main import get_user_recommendations
@@ -13,6 +13,7 @@ CLI usage (from the repository root):
     python -m src.collaborative_filtering.main --mode user --user_id <id> --n 10
 """
 import argparse
+from contextlib import nullcontext
 import logging
 import sys
 from typing import Any
@@ -80,6 +81,11 @@ def get_models_loader() -> ModelsLoader:
 def get_user_recommendations(
     user_id: str,
     n: int = DEFAULT_TOP_N,
+    *,
+    artefacts: tuple | None = None,
+    item_loader=None,
+    user_index: dict[str, int] | None = None,
+    inference_lock=None,
 ) -> list[dict[str, Any]]:
     """
     Generate top-N item recommendations for a given user.
@@ -106,6 +112,18 @@ def get_user_recommendations(
         raise ValueError(f"n must be a positive integer, got {n}")
 
     logger.info("Fetching recommendations for user: %s (n=%d)", user_id, n)
+
+    # The API supplies trained artifacts and a bounded metadata query. CLI callers
+    # retain the full-data path below; no serving request initializes DataLoader.
+    if artefacts is not None:
+        if item_loader is None:
+            raise ValueError("An item loader is required with explicit artifacts")
+        with inference_lock if inference_lock is not None else nullcontext():
+            ids = recommend_for_user(user_id=user_id, artefacts=artefacts, n=n, user_index=user_index)
+        # Only the numeric inference holds the lock; database latency must not
+        # prevent another shopper's inference from running.
+        rows = {row["parent_asin"]: row for row in item_loader(ids)} if ids else {}
+        return [rows[asin] for asin in ids if asin in rows]
 
     data_loader = get_data_loader()
     artefact_loader = get_models_loader()

@@ -21,6 +21,8 @@ def recommend_for_user(
     user_id: str,
     artefacts: tuple[Any, ...],
     n: int = DEFAULT_TOP_N,
+    *,
+    user_index: dict[str, int] | None = None,
 ) -> list[str]:
     """
     Generate ranked ALS collaborative recommendations for a known user.
@@ -44,8 +46,8 @@ def recommend_for_user(
 
     model, user_item_matrix, idx_to_userid, idx_to_itempasin = artefacts
 
-    # Create a mapping of user_id to idx
-    userid_to_idx = {v: k for k, v in idx_to_userid.items()}
+    # The API reuses its model-owned inverse map; standalone callers keep the fallback.
+    userid_to_idx = user_index if user_index is not None else {v: k for k, v in idx_to_userid.items()}
 
     # Check if user_id is valid or not
     user_idx = userid_to_idx.get(user_id)
@@ -53,17 +55,18 @@ def recommend_for_user(
     if user_idx is None:
         raise ValueError(f"Unknown user_id: {user_id}")
 
-    # Recommend using the idx of the targeted user
+    # Reuse the same sparse row for inference and seen-item filtering.
+    user_items = user_item_matrix[np.int32(user_idx)]
     recomm_idx, recomm_scores = model.recommend(
         userid=np.int32(user_idx),
-        user_items=user_item_matrix[np.int32(user_idx)],
+        user_items=user_items,
         N=n
     )
 
     # Returns the parent_asin of the recommended items
     # implicit pads exhausted results with minimum-score entries. These can
     # include already-seen products, so only return finite, unseen candidates.
-    seen_idx = set(user_item_matrix.getrow(user_idx).indices)
+    seen_idx = set(user_items.indices)
     return [
         idx_to_itempasin[i]
         for i, score in zip(recomm_idx, recomm_scores)

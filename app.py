@@ -8,53 +8,137 @@ deployment health check. Inference is serialized to limit temporary memory usage
 Run locally:
     uv run uvicorn app:app --reload
 
-Developer flow: lifespan loads one shared DataLoader and ModelsLoader before
-requests are accepted. Both engine modules receive these same cached objects;
-shutdown clears their references. The recommendation lock serializes inference
-to reduce temporary memory pressure. Catalogue routes read the startup snapshot,
-while user profiles and review pages query Supabase per request. HTTP handlers
-validate inputs and serialize pandas values; src.routing owns engine selection.
+Serving tables are queried on demand. A single background worker loads only
+trained artifacts; browsing is independent of model readiness. Shopper history
+is request-local and fetched only for content fallback. Synchronous routes run
+database operations off the event loop. Inference is serialized to limit RAM.
 """
-from contextlib import asynccontextmanager
+import asyncio
 import json
-from threading import Lock
+import logging
+from contextlib import asynccontextmanager
+from threading import Event, Lock
+from time import perf_counter
 from typing import Any
+
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
-from config import REVIEW_TABLE_NAME, USER_TABLE_NAME
-from utils.supabase_utils import SUPABASE_CLIENT
-from data_loader import DataLoader
-from models_loader import ModelsLoader
+from fastapi.responses import JSONResponse
+
+from models_loader import ModelsLoader, validate_inference_models
 from src import routing
-from src.collaborative_filtering import main as collaborative
-from src.content_based_filtering import main as content
+from utils.supabase_utils import (
+    CARD_FIELDS, DETAIL_FIELDS, DependencyUnavailable, ServingData, timed,
+)
 
 _inference_lock = Lock()
+serving_data = ServingData()
+logger = logging.getLogger(__name__)
+
+
+class ModelResources:
+    """Own one model-loading task and synchronize readiness with request threads."""
+
+    def __init__(self, loader):
+        self.loader = loader
+        self.stop = Event()
+        self.lock = Lock()
+        self.state = "queued"
+        self.value = None
+        self.task = None
+
+    def start(self):
+        if self.task is not None:
+            raise RuntimeError("Models already scheduled")
+        self.task = asyncio.create_task(self._load(), name="load-inference-models")
+
+    def _blocking_load(self):
+        if self.stop.is_set():
+            raise InterruptedError("Model initialization stopped")
+        with self.lock:
+            self.state = "loading"
+        return self.loader(self.stop)
+
+    async def _load(self):
+        started = perf_counter()
+        try:
+            result = await asyncio.to_thread(self._blocking_load)
+            with self.lock:
+                if not self.stop.is_set():
+                    self.value, self.state = result, "ready"
+                else:
+                    self.state = "stopped"
+            logger.info("Model readiness %s after %.3fs", self.state, perf_counter() - started)
+        except Exception as exc:
+            with self.lock:
+                self.state = "stopped" if self.stop.is_set() else "error"
+            logger.error("Model initialization %s after %.3fs (%s)",
+                         self.state, perf_counter() - started, type(exc).__name__)
+
+    def require(self):
+        with self.lock:
+            if self.stop.is_set():
+                raise HTTPException(503, detail="Service is stopping")
+            if self.state != "ready":
+                failed = self.state == "error"
+                raise HTTPException(503, detail={
+                    "message": "Required resources failed to load" if failed else "Required resources are still loading",
+                    "resources": {"models": self.state},
+                }, headers=None if failed else {"Retry-After": "5"})
+            return self.value
+
+    def report(self):
+        with self.lock:
+            state = "stopped" if self.stop.is_set() else self.state
+            status = "ready" if state == "ready" else "degraded" if state == "error" else "loading"
+            if self.stop.is_set():
+                status = "stopping"
+            return state == "ready", {"status": status, "resources": {
+                "models": state, "serving_data": "on_demand",
+            }}
+
+    async def close(self):
+        self.stop.set()
+        if self.task is not None:
+            # Do not abandon workers that might still be writing model cache files.
+            await asyncio.gather(self.task, return_exceptions=True)
+        with self.lock:
+            self.value, self.state = None, "stopped"
+
+
+def create_model_resources():
+    return ModelResources(lambda stop: validate_inference_models(ModelsLoader(stop_event=stop)))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Load shared inference resources before the server accepts requests.
-
-    Both tools receive the same datasets and model loader. Resources remain fixed
-    for the process lifetime; restarting reloads them using the existing cache policy.
-    Startup fails if required Supabase resources or local artefacts cannot be loaded.
-    """
-    data = DataLoader(inference_only=True)
-    models = ModelsLoader()
-    for tool in (collaborative, content):
-        tool._data_loader_obj = data
-        tool._models_loader_obj = models
+    """Schedule models without extracting User, Item, or Review tables."""
+    resources = create_model_resources()
+    app.state.models = resources
+    resources.start()
     try:
         yield
     finally:
-        for tool in (collaborative, content):
-            tool._data_loader_obj = None
-            tool._models_loader_obj = None
+        try:
+            await resources.close()
+        finally:
+            app.state.models = None
 
 
 app = FastAPI(title="Amozon Recommendation API", lifespan=lifespan)
+
+
+@app.exception_handler(DependencyUnavailable)
+async def upstream_unavailable(request, exc):
+    return JSONResponse({"detail": "Supabase request failed"}, status_code=503,
+                        headers={"Retry-After": "5"})
+
+
+def _model_resources():
+    resources = getattr(app.state, "models", None)
+    if resources is None:
+        raise HTTPException(503, detail="Service is not running")
+    return resources
 
 
 def _validate_identifier(identifier: str) -> str:
@@ -69,33 +153,22 @@ def _serialize_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return json.loads(pd.DataFrame(items).to_json(orient="records"))
 
 
-CARD_FIELDS = [
-    "parent_asin", "item_title", "main_category", "price", "is_free",
-    "avg_rating", "num_reviews",
-]
-DETAIL_FIELDS = CARD_FIELDS + [
-    "store", "popularity_segment", "quality_score", "description",
-]
-
-
-def _product(parent_asin: str) -> pd.Series:
-    """Find cached product metadata or raise HTTP 404 for an unknown ID."""
-    catalogue = collaborative.get_data_loader().item_df
-    matches = catalogue[catalogue["parent_asin"] == parent_asin]
-    if matches.empty:
+def _product(parent_asin: str) -> dict:
+    """Look up one product, including direct links to unsampled products."""
+    product = serving_data.product(parent_asin)
+    if product is None:
         raise HTTPException(status_code=404, detail="Product not found")
-    return matches.iloc[0]
+    return product
 
 
 def _card_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Enrich ranked results with card metadata while preserving engine fields."""
-    catalogue = collaborative.get_data_loader().item_df[CARD_FIELDS].set_index("parent_asin")
+    catalogue = {row["parent_asin"]: row for row in serving_data.cards(
+        [item["parent_asin"] for item in items]
+    )}
     enriched = []
     for item in items:
-        metadata = (
-            catalogue.loc[item["parent_asin"]].to_dict()
-            if item["parent_asin"] in catalogue.index else {}
-        )
+        metadata = catalogue.get(item["parent_asin"], {})
         merged = {**item, **metadata}
         # Preserve engine-specific fields such as recommendation scores.
         enriched.append({**merged, **{key: merged.get(key) for key in CARD_FIELDS}})
@@ -104,8 +177,16 @@ def _card_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    """Report process health after startup resource loading succeeds."""
+    """Process liveness; does not wait for models or probe the database."""
+    _model_resources()
     return {"status": "ok"}
+
+
+@app.get("/ready")
+def readiness():
+    """Model readiness; serving data is fetched on demand and is not bulk-loaded."""
+    ready, report = _model_resources().report()
+    return JSONResponse(report, status_code=200 if ready else 503)
 
 
 @app.get("/api/v1/users/{user_id}/recommendations")
@@ -126,16 +207,24 @@ def user_recommendations(
                       server errors and do not silently trigger fallback.
     """
     user_id = _validate_identifier(user_id)
-    with _inference_lock:
-        result = routing.get_user_recommendations(user_id, n=n)
+    models = _model_resources().require()
+    with timed("Recommendation generation"):
+        result = routing.get_user_recommendations(
+            user_id, n=n, model_artefacts=models.model_artefacts,
+            history_loader=serving_data.history, item_loader=serving_data.cards,
+            inference_lock=_inference_lock,
+            user_index=models.user_index, content_indexes=models.content_indexes,
+        )
         if result["items"] is not None:
-            result["items"] = _card_items(result["items"])
+            # CF already queried its ranked IDs in a batch, including card fields.
+            result["items"] = (_card_items(result["items"]) if result["engine_used"] == "content_based"
+                               else _serialize_items(result["items"]))
         return result
 
 
 @app.get("/api/v1/items/{parent_asin}")
 def item_details(parent_asin: str) -> dict[str, Any]:
-    """Return product card and detail-page metadata, or 404 for an unknown ID."""
+    """Query one product's card/detail metadata, or return 404 for an unknown ID."""
     product = _product(_validate_identifier(parent_asin))
     return _serialize_items([{key: product.get(key) for key in DETAIL_FIELDS}])[0]
 
@@ -148,47 +237,20 @@ def item_reviews(
 ) -> dict[str, Any]:
     """Fetch one review page from Supabase, newest first with stable review-ID ties."""
     parent_asin = _validate_identifier(parent_asin)
-    _product(parent_asin)
-    start = (page - 1) * page_size
-    response = (
-        SUPABASE_CLIENT.table(REVIEW_TABLE_NAME)
-        .select(
-            "review_id,user_id,parent_asin,review_title,review_text,review_rating,"
-            "review_date,verified_purchase,helpful_vote", count="exact",
-        )
-        .eq("parent_asin", parent_asin)
-        .order("review_date", desc=True, nullsfirst=False)
-        .order("review_id")
-        .range(start, start + page_size - 1)
-        .execute()
-    )
-    total = response.count or 0
-    return {
-        "items": _serialize_items(response.data),
-        "page": page, "page_size": page_size,
-        "total_count": total, "page_count": (total + page_size - 1) // page_size,
-    }
+    if not serving_data.product_exists(parent_asin):
+        raise HTTPException(status_code=404, detail="Product not found")
+    response = serving_data.reviews(parent_asin, page, page_size)
+    return {**response, "items": _serialize_items(response["items"])}
 
 
 @app.get("/api/v1/users/{user_id}")
 def user_details(user_id: str) -> dict[str, Any]:
     """Fetch a shopper's prepared profile from Supabase without loading all users."""
     user_id = _validate_identifier(user_id)
-    response = (
-        SUPABASE_CLIENT.table(USER_TABLE_NAME)
-        .select(
-            "user_id,num_reviews,avg_rating_given,min_rating_given,max_rating_given,"
-            "first_review_date,last_review_date,days_active,user_segment,"
-            "num_verified_purchases,verified_purchase_ratio,avg_price_purchased,"
-            "free_app_ratio,total_helpful_votes_received"
-        )
-        .eq("user_id", user_id)
-        .limit(1)
-        .execute()
-    )
-    if not response.data:
+    response = serving_data.profile(user_id)
+    if response is None:
         raise HTTPException(status_code=404, detail="User not found")
-    return _serialize_items(response.data)[0]
+    return _serialize_items([response])[0]
 
 #################################################################################################
 # Helper Endpoints for Frontend
@@ -196,17 +258,11 @@ def user_details(user_id: str) -> dict[str, Any]:
 
 @app.get("/api/v1/randomusers")
 def random_users(n: int = Query(5, ge=1, le=100)) -> list[dict[str, Any]]:
-    """Sample distinct shoppers with review history, up to the available count."""
-    users = collaborative.get_data_loader().user_item_df["user_id"].dropna().drop_duplicates()
-    return [{"user_id": str(user)} for user in users.sample(n=min(n, len(users)))]
+    """Sample distinct eligible shoppers inside Supabase, transferring at most n IDs."""
+    return serving_data.random_users(n)
 
 
 @app.get("/api/v1/popular_items")
 def popular_items(limit: int = Query(5, ge=1, le=100)) -> list[dict[str, Any]]:
     """Rank by review count, then average rating, with stable product-ID ties."""
-    catalogue = collaborative.get_data_loader().item_df
-    ranked = catalogue.sort_values(
-        ["num_reviews", "avg_rating", "parent_asin"],
-        ascending=[False, False, True], na_position="last",
-    )
-    return _serialize_items(ranked.head(limit)[CARD_FIELDS].to_dict(orient="records"))
+    return _serialize_items(serving_data.popular_items(limit))

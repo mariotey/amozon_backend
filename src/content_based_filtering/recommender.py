@@ -86,6 +86,8 @@ def recommend_for_user(
     user_item_df: pd.DataFrame,
     artefacts: tuple[Any, ...],
     n: int = DEFAULT_TOP_N,
+    *,
+    index_maps: tuple[dict[str, int], dict[int, str]] | None = None,
 ) -> pd.DataFrame:
     """
     Generate top-N content-based recommendations for a user.
@@ -107,7 +109,7 @@ def recommend_for_user(
     - ValueError: If n is not a positive integer.
     """
     _, item_matrix, meta_df = artefacts
-    item_to_idx, idx_to_item = build_item_index_maps(meta_df)
+    item_to_idx, idx_to_item = index_maps if index_maps is not None else build_item_index_maps(meta_df)
 
     if n < 1:
         raise ValueError(f"n must be a positive integer, got {n}")

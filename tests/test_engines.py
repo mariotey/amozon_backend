@@ -14,9 +14,35 @@ os.environ.setdefault("SUPBASE_SECRET_KEY", "test-key")
 from src.collaborative_filtering import main as collaborative
 from src.collaborative_filtering.recommender import recommend_for_user as cf_recommend
 from src.content_based_filtering.recommender import recommend_for_user as cb_recommend
+from src.content_based_filtering.recommender import build_user_profile
 
 
 class EngineTests(unittest.TestCase):
+    def test_content_profile_preserves_rating_and_recency_weights(self):
+        history = pd.DataFrame([
+            {"user_id": "u", "parent_asin": "a", "review_rating": 5., "recency_weight": 1.},
+            {"user_id": "u", "parent_asin": "b", "review_rating": 3., "recency_weight": .5},
+            {"user_id": "u", "parent_asin": "a", "review_rating": 1., "recency_weight": 100.},
+            {"user_id": "other", "parent_asin": "b", "review_rating": 5., "recency_weight": 100.},
+        ])
+        profile = build_user_profile("u", history, csr_matrix(np.eye(2)), {"a": 0, "b": 1})
+        np.testing.assert_allclose(profile, [[1 / 1.3, .3 / 1.3]])
+
+    def test_content_preserves_category_boost_free_preference_and_low_rating_seen_exclusion(self):
+        meta = pd.DataFrame([
+            {"parent_asin": asin, "item_title": asin, "main_category": category, "is_free": free}
+            for asin, category, free in (("seen", "Liked", True), ("paid", "Liked", False),
+                                         ("other", "Other", True), ("same", "Liked", True),
+                                         ("seen-low", "Liked", True))
+        ])
+        history = pd.DataFrame([
+            {"user_id": "u", "parent_asin": "seen", "review_rating": 5., "recency_weight": 1.},
+            {"user_id": "u", "parent_asin": "seen-low", "review_rating": 1., "recency_weight": 1.},
+        ])
+        result = cb_recommend("u", history, (None, csr_matrix(np.ones((5, 2))), meta), n=100)
+        self.assertEqual(result.parent_asin.tolist(), ["same", "other"])
+        self.assertGreater(result.iloc[0].score, result.iloc[1].score)
+
     def test_collaborative_filters_exhausted_and_seen_results(self):
         model = Mock()
         model.recommend.return_value = (

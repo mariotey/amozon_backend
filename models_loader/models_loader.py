@@ -13,14 +13,17 @@ inference must agree on this order. JSON keys become integer matrix indices.
 Only missing files trigger downloads; existing caches are not checked against
 remote model versions. Load joblib artifacts only from trusted sources.
 """
+import numpy as np
 import pandas as pd
 import joblib
 import json
 import scipy.sparse
+from scipy.sparse import isspmatrix_csr
 import importlib
 from pathlib import Path
 from typing import Any
 from types import ModuleType
+from threading import Event
 from utils.supabase_utils import download_artefacts_from_supabase
 from config import (
     REPO_ROOT,
@@ -31,6 +34,7 @@ from config import (
 def read_local_artefacts(
     filename_dir: Path,
     model_artefacts_dict: dict[str, str],
+    stop_event: Event | None = None,
 ) -> tuple[Any, ...]:
     """
     Load model artefacts from the local directory.
@@ -45,6 +49,8 @@ def read_local_artefacts(
     model_artefacts = []
 
     for filename in model_artefacts_dict.values():
+        if stop_event is not None and stop_event.is_set():
+            raise InterruptedError("Model loading stopped")
         filepath = filename_dir / filename
         suffix = filepath.suffix
 
@@ -114,7 +120,8 @@ def save_local_artefacts(
     print("Artefacts successfully saved in local drive.\n")
 
 def load_artefacts(
-    tool_config: ModuleType
+    tool_config: ModuleType,
+    stop_event: Event | None = None,
 ) -> tuple[Any, ...]:
     """
     Load model artefacts for a configured recommender tool.
@@ -135,6 +142,8 @@ def load_artefacts(
     - tuple[Any, ...]: Loaded model artefacts in the same order as defined by
                        `MODEL_ARTEFACTS.values()`
     """
+    if stop_event is not None and stop_event.is_set():
+        raise InterruptedError("Model loading stopped")
     tool_name = tool_config.MODEL_NAME
     model_id = tool_config.MODEL_ID
     model_artefacts_dict = tool_config.MODEL_ARTEFACTS
@@ -154,14 +163,14 @@ def load_artefacts(
         print(f"Missing {len(missing_files)} artefacts for `{tool_name}`. ")
 
         # Download the latest artefacts and cache them locally.
-        download_artefacts_from_supabase(tool_name, model_id, model_artefacts_dict)
-        model_artefacts = read_local_artefacts(tool_artefact_dir, model_artefacts_dict)
+        download_artefacts_from_supabase(tool_name, model_id, model_artefacts_dict, stop_event=stop_event)
+        model_artefacts = read_local_artefacts(tool_artefact_dir, model_artefacts_dict, stop_event)
 
     else:
         print(f"Reading models for `{tool_name}` from local drive...")
 
         # Load previously cached artefacts.
-        model_artefacts = read_local_artefacts(tool_artefact_dir, model_artefacts_dict)
+        model_artefacts = read_local_artefacts(tool_artefact_dir, model_artefacts_dict, stop_event)
 
     return model_artefacts
 
@@ -178,7 +187,8 @@ class ModelsLoader:
 
     def __init__(
         self,
-        tools: list[str] | None = None
+        tools: list[str] | None = None,
+        stop_event: Event | None = None,
     ) -> None:
         """
         Initialise the model loader and load artefacts for selected tools.
@@ -210,7 +220,50 @@ class ModelsLoader:
             )
 
             self.model_artefacts[tool] = load_artefacts(
-                tool_config=tool_config
+                tool_config=tool_config, stop_event=stop_event,
             )
 
             print(f"\nArtefacts successfully loaded for `{tool}`!\n")
+
+
+def _require_valid(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def validate_inference_models(loader):
+    """Validate trained artifacts and build bounded lookup maps once per model load."""
+    model, matrix, users, products = loader.model_artefacts["collaborative_filtering"]
+    _require_valid(isspmatrix_csr(matrix) and min(matrix.shape) > 0, "Invalid CF interaction matrix")
+    _require_valid(np.isfinite(matrix.data).all() and (matrix.data >= 0).all(), "Invalid CF weights")
+    for mapping, count in ((users, matrix.shape[0]), (products, matrix.shape[1])):
+        _require_valid(set(mapping) == set(range(count)), "CF mapping/matrix mismatch")
+        _require_valid(all(isinstance(value, str) and value for value in mapping.values()), "Invalid CF IDs")
+        _require_valid(len(set(mapping.values())) == count, "Duplicate CF IDs")
+    uf, itf = model.user_factors, model.item_factors
+    _require_valid(uf.ndim == itf.ndim == 2 and uf.shape[0] == matrix.shape[0]
+            and itf.shape[0] == matrix.shape[1] and uf.shape[1] == itf.shape[1] > 0,
+            "ALS factors/matrix mismatch")
+    _require_valid(np.isfinite(uf).all() and np.isfinite(itf).all(), "Invalid ALS factors")
+    _require_valid(callable(getattr(model, "recommend", None)), "Invalid collaborative model")
+
+    vectorizer, features, meta = loader.model_artefacts["content_based_filtering"]
+    _require_valid({"parent_asin", "item_title", "main_category", "is_free"} <= set(meta.columns),
+            "Invalid content metadata schema")
+    _require_valid(not meta.empty and meta.parent_asin.is_unique
+            and meta.parent_asin.map(lambda value: isinstance(value, str) and bool(value)).all(),
+            "Invalid content product IDs")
+    _require_valid(isspmatrix_csr(features) and features.shape == (len(meta), len(vectorizer.vocabulary_))
+            and features.shape[1] > 0 and len(vectorizer.idf_) == features.shape[1],
+            "TF-IDF matrix/vocabulary/metadata mismatch")
+    _require_valid(set(vectorizer.vocabulary_.values()) == set(range(features.shape[1])), "Invalid vocabulary indices")
+    _require_valid(np.isfinite(features.data).all() and (features.data >= 0).all()
+            and np.isfinite(vectorizer.idf_).all(), "Invalid TF-IDF weights")
+    # These maps share the existing ID strings and stay fixed with this model set.
+    # Request histories and live product details are never cached here.
+    loader.user_index = {user_id: idx for idx, user_id in users.items()}
+    loader.content_indexes = (
+        {asin: idx for idx, asin in enumerate(meta["parent_asin"])},
+        dict(enumerate(meta["parent_asin"])),
+    )
+    return loader

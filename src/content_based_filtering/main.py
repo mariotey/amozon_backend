@@ -1,9 +1,9 @@
 """
 Inference handlers for the content-based filtering module.
 
-Importable handlers used by the FastAPI application and CLI. FastAPI startup
-provides shared data/model resources; standalone calls load and cache resources
-lazily. Model builds save local artifacts and reset this module's caches.
+Importable handlers used by the FastAPI application and CLI. API calls supply
+trained artifacts and request-specific history. Standalone calls load and cache
+full resources lazily. Model builds save local artifacts and reset caches.
 
 Python usage:
     from src.content_based_filtering.main import get_user_recommendations
@@ -81,6 +81,10 @@ def get_models_loader() -> ModelsLoader:
 def get_user_recommendations(
     user_id: str,
     n: int = DEFAULT_TOP_N,
+    *,
+    artefacts: tuple | None = None,
+    history: pd.DataFrame | None = None,
+    index_maps: tuple[dict[str, int], dict[int, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Return top-N content-based recommendations for a user.
@@ -107,14 +111,18 @@ def get_user_recommendations(
 
     logger.info("Fetching recommendations for user: %s (n=%d)", user_id, n)
 
-    data_loader = get_data_loader()
-    artefact_loader = get_models_loader()
+    if artefacts is not None and history is None:
+        raise ValueError("Request-specific history is required with explicit artifacts")
+    if artefacts is None:
+        history = get_data_loader().user_item_df
+        artefacts = get_models_loader().model_artefacts[MODEL_NAME]
 
     recs: pd.DataFrame = recommend_for_user(
         user_id=user_id,
-        user_item_df=data_loader.user_item_df,
-        artefacts=artefact_loader.model_artefacts[MODEL_NAME],
+        user_item_df=history,
+        artefacts=artefacts,
         n=n,
+        index_maps=index_maps,
     )
     return recs.to_dict(orient="records")
 
