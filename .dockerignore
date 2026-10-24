@@ -1,0 +1,11 @@
+.git
+.venv
+.env*
+**/__pycache__
+**/*.pyc
+**/.ipynb_checkpoints
+data
+models
+notebook
+Microsoft
+.vscode

@@ -56,6 +56,7 @@ def extract_table_from_supabase(
     table_name: str,
     batch_size: int = 1000,
     show_progress: bool = True,
+    columns: list[str] | None = None,
 ) -> pd.DataFrame:
     """
     Extract all records from a Supabase table in batches and concatenated into a pandas DataFrame.
@@ -82,7 +83,7 @@ def extract_table_from_supabase(
         res = (
             SUPABASE_CLIENT
             .table(table_name)
-            .select("*")
+            .select(",".join(columns) if columns else "*")
             .range(offset, offset + batch_size - 1)
             .execute()
         )
@@ -259,6 +260,18 @@ def download_artefacts_from_supabase(
             .limit(1)
             .execute()
         )
+
+    if not response.data:
+        response = (
+            SUPABASE_CLIENT.table(MODELREGISTRY_TABLE_NAME)
+            .select("storage_path")
+            .eq("tool", tool_name)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    if not response.data:
+        raise FileNotFoundError(f"No model artefacts registered for {tool_name}")
 
     storage_path = response.data[0]["storage_path"]
 
