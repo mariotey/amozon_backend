@@ -80,7 +80,7 @@ class DataLoader:
         from a local Parquet file if available; otherwise, it is downloaded from supabase and
         cached locally.
         """
-        # Inference needs neither user aggregates nor long review/product text.
+        # Serving needs product metadata, but not user aggregates or all review text.
         # Keep the default full-data behavior for the training CLI.
         if inference_only:
             self.user_df = pd.DataFrame()
@@ -89,6 +89,7 @@ class DataLoader:
                 columns=[
                     "parent_asin", "item_title", "main_category", "is_free",
                     "quality_score", "num_reviews",
+                    "price", "avg_rating", "store", "popularity_segment", "description",
                 ],
             )
             self.user_item_df = load_data(

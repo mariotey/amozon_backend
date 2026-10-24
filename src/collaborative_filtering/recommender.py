@@ -56,4 +56,12 @@ def recommend_for_user(
     )
 
     # Returns the parent_asin of the recommended items
-    return [idx_to_itempasin[i] for i in recomm_idx]
+    # implicit pads exhausted results with minimum-score entries. These can
+    # include already-seen products, so only return finite, unseen candidates.
+    seen_idx = set(user_item_matrix.getrow(user_idx).indices)
+    return [
+        idx_to_itempasin[i]
+        for i, score in zip(recomm_idx, recomm_scores)
+        if i in idx_to_itempasin and i not in seen_idx and np.isfinite(score)
+        and score > -np.finfo(np.float32).max
+    ]

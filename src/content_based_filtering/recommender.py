@@ -142,7 +142,12 @@ def recommend_for_user(
     )
 
     pool_size = n * CANDIDATE_POOL_MULTIPLIER
-    pool_idx: np.ndarray = np.argsort(scores)[::-1][:pool_size]
+    # Exclude seen products before selecting the pool; a low score alone still
+    # returns them when the requested count exceeds the unseen candidates.
+    eligible = np.ones(len(scores), dtype=bool)
+    eligible[seen_idx] = False
+    candidate_idx = np.flatnonzero(eligible & np.isfinite(scores))
+    pool_idx: np.ndarray = candidate_idx[np.argsort(scores[candidate_idx])[::-1]][:pool_size]
     pool = pd.DataFrame(
         {
             "parent_asin": [idx_to_item[i] for i in pool_idx],

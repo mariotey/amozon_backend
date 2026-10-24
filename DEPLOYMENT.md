@@ -2,7 +2,8 @@
 
 For the project overview, see [README.md](README.md).
 
-The service exposes one recommendation endpoint and one health check. FastAPI's
+The service exposes recommendations, random shoppers, catalogue details, popular
+items, product reviews, and a health check. FastAPI's
 `/docs`, `/redoc`, and `/openapi.json` provide generated API documentation.
 Individual engines remain callable in Python and through their CLI commands, but
 are not separate HTTP endpoints.
@@ -14,8 +15,8 @@ are not separate HTTP endpoints.
 1. Try collaborative filtering if the user exists in the trained ALS mapping.
 2. If no items were returned or the user is absent from ALS, try content-based
    filtering when at least one review rated 3 or above overlaps the TF-IDF index.
-3. Otherwise, return popular unseen items ranked by `quality_score` descending,
-   `num_reviews` descending, and `parent_asin` ascending to break ties.
+3. Otherwise, return HTTP 200 with `items: null` and `engine_used: null`.
+   The separate popular-products endpoint remains available for catalogue browsing.
 
 The first eligible engine producing items wins. There is no LLM, blended ranking,
 or arbitrary minimum-review threshold. Unexpected data/model failures propagate
@@ -27,7 +28,7 @@ use the data/model snapshot loaded at startup under the existing cache policy.
 | Path | Purpose |
 | --- | --- |
 | `app.py` | FastAPI routes and shared startup resources |
-| `src/routing.py` | Deterministic CF-first routing and popularity fallback |
+| `src/routing.py` | Deterministic CF-first routing and no-recommendation responses |
 | `Dockerfile` | Python 3.13 environment, dependencies, and server startup |
 | `.dockerignore` | Excludes credentials, local environments, datasets, and models from the image |
 | `src/collaborative_filtering/` | ALS training and recommendations |
@@ -159,17 +160,51 @@ Open `BASE_URL/health`. Expected HTTP status: **200**.
 {"status": "ok"}
 ```
 
-Then open `BASE_URL/docs`. Swagger UI should list only `/health` and
-`/api/v1/users/{user_id}/recommendations`. Health becomes available after startup
+Then open `BASE_URL/docs` for all endpoints, parameters, and interactive requests.
+Health becomes available after startup
 loading succeeds; it does not continually check Supabase connectivity. Visiting
 `/` returns 404 because no homepage is defined.
+
+Available shopper and catalogue endpoints:
+
+| Endpoint | Response |
+| --- | --- |
+| `GET /api/v1/randomusers?n=5` | Array of distinct randomly sampled `{ "user_id": "..." }` shoppers from loaded review history; returns fewer if fewer exist. |
+| `GET /api/v1/users/{user_id}` | Prepared shopper profile fetched from Supabase; unknown users return 404 and blank IDs return 422. |
+| `GET /api/v1/users/{user_id}/recommendations?n=8` | Existing `user_id`, `engine_used`, `reason`, and `items` response, with enriched product cards. |
+| `GET /api/v1/items/popular?limit=5` | Array of product cards ordered by `num_reviews` descending, then `avg_rating` descending, then product ID ascending. |
+| `GET /api/v1/items/{parent_asin}` | Product card plus `store`, `popularity_segment`, `quality_score`, and `description`. |
+| `GET /api/v1/items/{parent_asin}/reviews?page=1&page_size=10` | `items`, `page`, `page_size`, `total_count`, and `page_count`; reviews ordered by `review_date` descending and `review_id` ascending. |
+
+Product card fields are `parent_asin`, `item_title`, `main_category`, `price`,
+`is_free`, `avg_rating`, and `num_reviews`. Recommendation items retain additional
+engine fields. Prices follow the prepared dataset convention: `-1` means unknown.
+Missing metadata is serialized as JSON `null`.
+
+User details include `user_id`, `num_reviews`, `avg_rating_given`,
+`min_rating_given`, `max_rating_given`, `first_review_date`, `last_review_date`,
+`days_active`, `user_segment`, `num_verified_purchases`, `verified_purchase_ratio`,
+`avg_price_purchased`, `free_app_ratio`, and `total_helpful_votes_received`.
+This endpoint fetches one prepared profile per request; it does not recompute
+aggregates or load all user profiles into memory. Missing values are JSON `null`.
+
+`n`, `limit`, and `page_size` accept integers from 1 to 100; `page` starts at 1.
+Unknown products return 404 for both details and reviews. Existing products with
+no reviews return an empty `items` array and zero counts; pages beyond the last
+page return an empty array with the actual total and page count.
+
+Product metadata uses the startup cache. Reviews are queried directly from
+Supabase per request with exact counts and database pagination, avoiding loading
+all review text into memory. Review objects include `review_id`, `user_id`,
+`parent_asin`, `review_title`, `review_text`, `review_rating`, `review_date`,
+`verified_purchase`, and `helpful_vote`.
 
 ### 2. Choose test users
 
 - **Collaborative:** a user from the deployed ALS model's `idx_to_userid_mapping.json`.
 - **Content-based:** a user absent from that mapping, with at least one review
   rated 3 or above for an item present in the content model's `cb_meta.parquet`.
-- **Popularity:** an unknown user ID, such as `__new_test_user__`.
+- **No recommendations:** an unknown user ID, such as `__new_test_user__`.
 
 If local and deployed models match, print a known ALS user with:
 
@@ -212,16 +247,17 @@ Expected HTTP status: **200**. Example response (illustrative values):
 | --- | --- |
 | Known ALS user | `collaborative` |
 | User absent from ALS with qualifying indexed positive reviews | `content_based` |
-| Unknown user or one without an eligible personalised profile | `popular` |
+| Unknown user or one without an eligible personalised profile | `null` |
 
 The response always contains `user_id`, `engine_used`, `reason`, and `items`.
-Item fields are `parent_asin`, `item_title`, `main_category`, and `is_free`;
+Item fields are `parent_asin`, `item_title`, `main_category`, `price`, `is_free`,
+`avg_rating`, and `num_reviews`;
 content-based items also include `score`. Missing metadata is JSON `null`.
 Check the `reason` if an empty personalised result led to a later engine.
 
 Without `n`, the default is 10; the range is 1 through 100. Fewer items can be
-returned when candidates are limited. Popularity excludes previously reviewed
-items; if no unseen candidates remain, `items` is empty. These checks establish
+returned when candidates are limited. If neither engine produces items,
+`items` and `engine_used` are `null`. These checks establish
 serving behavior, not recommendation quality, which needs separate evaluation.
 
 ### 4. Check validation and error behavior
@@ -230,8 +266,8 @@ serving behavior, not recommendation quality, which needs separate evaluation.
 | --- | --- |
 | `n=0`, `n=101`, or `n=abc` | 422; JSON validation error |
 | Blank user ID (for example `%20`) | 422; `{"detail": "ID must not be blank"}` |
-| Unknown user | 200; popularity fallback, not 404 |
-| No eligible unseen catalogue candidates | 200; `items: []` inside the response object |
+| Unknown user | 200; `items: null` and `engine_used: null` |
+| Neither engine produces recommendations | 200; `items: null` and `engine_used: null` |
 | Unexpected data/model failure | Server error; no silent fallback |
 | `/` or a removed direct tool endpoint | 404; `{"detail": "Not Found"}` |
 
@@ -248,7 +284,8 @@ uv run python -m unittest discover -s tests -v
 
 Tests use small datasets and mocked inference, without downloading resources or
 calling real models. They cover CF priority, content eligibility, empty-result
-fallback, popularity ranking/exclusions, validation, and the public HTTP contract.
+fallback, null recommendation responses, catalogue endpoints, review pagination,
+validation, and the public HTTP contract.
 
 ## Render Free behavior and troubleshooting
 
@@ -272,7 +309,7 @@ within included allowances to keep costs at zero. See
 | Process is killed or runs out of memory | Check Render logs/metrics; reduce the served dataset or model size to remain on Free |
 | First request is slow | Allow the service to wake and download its resources; inspect startup logs |
 | 404 at `/` | Expected; open `/docs` or `/health` |
-| Unexpected popularity fallback | Inspect `reason`, ALS membership, and qualifying reviews in the content index |
+| Unexpected null recommendations | Inspect `reason`, ALS membership, and qualifying reviews in the content index |
 
 The API currently has no authentication. Supabase credentials stay on the server;
 the recommendation routes accept IDs supplied by the caller.

@@ -128,6 +128,9 @@ def get_user_recommendations(
             "is_free"
         ]
     ]
+    # Catalogue row order is unrelated to the model's ranked result order.
+    rank = {asin: position for position, asin in enumerate(recs_ids)}
+    recs = recs.sort_values("parent_asin", key=lambda ids: ids.map(rank))
 
     # Convert to list of dictionaries (API-friendly format)
     return recs.to_dict(orient="records")
