@@ -93,7 +93,6 @@ def _card_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return _serialize_items(enriched)
 
 
-
 @app.get("/health")
 def health() -> dict[str, str]:
     """Report process health after startup resource loading succeeds."""
@@ -193,8 +192,7 @@ def random_users(n: int = Query(5, ge=1, le=100)) -> list[dict[str, Any]]:
     return [{"user_id": str(user)} for user in users.sample(n=min(n, len(users)))]
 
 
-# Register the static popular path before the dynamic product path.
-@app.get("/api/v1/items/popular")
+@app.get("/api/v1/popular_items")
 def popular_items(limit: int = Query(5, ge=1, le=100)) -> list[dict[str, Any]]:
     """Rank by review count, then average rating, with stable product-ID ties."""
     catalogue = collaborative.get_data_loader().item_df
