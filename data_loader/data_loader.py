@@ -86,7 +86,10 @@ class DataLoader:
             self.user_df = pd.DataFrame()
             self.item_df = load_data(
                 ITEM_FILENAME, ITEM_TABLE_NAME,
-                columns=["parent_asin", "item_title", "main_category", "is_free"],
+                columns=[
+                    "parent_asin", "item_title", "main_category", "is_free",
+                    "quality_score", "num_reviews",
+                ],
             )
             self.user_item_df = load_data(
                 USER_ITEM_INTERACT_FILENAME, REVIEW_TABLE_NAME,
