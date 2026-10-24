@@ -23,6 +23,7 @@ from typing import Any
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from models_loader import ModelsLoader, validate_inference_models
@@ -126,6 +127,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Amozon Recommendation API", lifespan=lifespan)
+
+
+# Existing public, read-only storefront endpoints; browsers send no credentials.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET"],
+    allow_headers=["Accept"],
+    expose_headers=["Retry-After"],
+)
 
 
 @app.exception_handler(DependencyUnavailable)
