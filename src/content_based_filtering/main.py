@@ -1,15 +1,14 @@
 """
 Inference handlers for the content-based filtering module.
 
-Exposes importable functions designed to be called directly by an Azure Function handler (or any
-other serverless runtime). Resource-intensive objects such as datasets and model artefacts are
-loaded lazily and cached in memory so that warm invocations avoid repeated disk I/O and
-deserialization overhead.
+Importable handlers used by the FastAPI application and CLI. FastAPI startup
+provides shared data/model resources; standalone calls load and cache resources
+lazily. Model builds save local artifacts and reset this module's caches.
 
-Azure Function usage example:
-    from content_based_filtering.main import get_user_recommendations, get_similar_items
+Python usage:
+    from src.content_based_filtering.main import get_user_recommendations
 
-CLI usage (from repo root or src/):
+CLI usage (from the repository root):
     python -m src.content_based_filtering.main --mode build
     python -m src.content_based_filtering.main --mode user --user_id <id> --n 10
     python -m src.content_based_filtering.main --mode item --asin <asin> --n 10

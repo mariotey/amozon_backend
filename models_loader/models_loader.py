@@ -7,6 +7,11 @@ they are downloaded from supabase and cached locally.
 
 The module also provides "ModelsLoader", which dynamically discovers available recommender tools,
 loads their configurations, and retrieves the corresponding model artefacts.
+
+Artifact tuple positions follow MODEL_ARTEFACTS insertion order; training and
+inference must agree on this order. JSON keys become integer matrix indices.
+Only missing files trigger downloads; existing caches are not checked against
+remote model versions. Load joblib artifacts only from trusted sources.
 """
 import pandas as pd
 import joblib
@@ -183,7 +188,9 @@ class ModelsLoader:
                                     a valid tool_config.py file will be loaded.
 
         Raises:
-        - ImportError: If a selected tool does not contain a valid tool_config module.
+        - FileNotFoundError: If a selected configuration or required model is missing.
+        - ImportError: If a configuration cannot be imported.
+        - Exception: Download/deserialization failures propagate.
         """
         self.model_artefacts = {}
 

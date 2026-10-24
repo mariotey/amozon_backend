@@ -21,8 +21,14 @@ def build_and_save(
     artifacts to disk.
 
     Args:
-    - item_df (pd.DataFrame): A DataFrame containing the items
-    - user_item_df (pd.DataFrame): DataFrame of user-item interactions
+    - item_df (pd.DataFrame): Product IDs, image/video counts, and price.
+    - user_item_df (pd.DataFrame): User/product IDs, rating, helpfulness, recency,
+      review word counts, and review image counts.
+
+    Features are min-max scaled, price is inverted, and their unweighted mean
+    becomes an interaction score. Repeated user/product pairs are averaged.
+    Categorical codes define matrix indices. Saves ALS, its interaction matrix,
+    and both ID maps locally in MODEL_ARTEFACTS order; does not upload them.
     """
     scaler = MinMaxScaler()
 

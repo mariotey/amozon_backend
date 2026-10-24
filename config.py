@@ -1,5 +1,15 @@
 """
 Configuration Constants for the Recommendation System
+
+Paths are resolved relative to this file, not the current working directory.
+DATA_INPUT_DIR holds downloaded source data; DATA_OUTPUT_DIR holds prepared
+training/inference caches; MODEL_ARTEFACT_DIR holds serialized engine artifacts.
+Supabase credentials are read by utils.supabase_utils, not by this module.
+Changing dataset settings does not rebuild caches or retrain models.
+
+Paths are anchored to this file. Input data, prepared output caches, and model
+artifacts have separate directories. Changing settings does not refresh caches
+or retrain models. Credentials are read by utils.supabase_utils.
 """
 from pathlib import Path
 

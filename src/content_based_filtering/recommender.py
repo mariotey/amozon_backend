@@ -1,5 +1,10 @@
 """
 Core recommendation logic for content-based filtering.
+
+Matrix rows and metadata rows must stay aligned. Positive reviews create a
+rating/recency-weighted user profile. Cosine similarity selects a bounded pool;
+seen items are excluded, category preference boosts scores, and a free-only
+preference can reduce results. Fewer than n results is valid.
 """
 from typing import Any
 import logging

@@ -13,6 +13,11 @@ The upload workflow includes:
 
 This module assumes that model artefacts have already been generated and saved locally before the
 upload process begins.
+
+Executes on import. Validates local engine artifacts, creates a registry version,
+and uploads files. Registry creation reconciles storage and can delete stale
+registry rows and orphaned files. Publication is not transactional: registry
+insertion precedes uploads, so failures can leave an incomplete model version.
 """
 import importlib
 from utils.supabase_utils import push_artefacts_into_registry, push_artefacts_into_supabase

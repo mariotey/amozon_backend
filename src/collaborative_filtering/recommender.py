@@ -1,5 +1,10 @@
 """
 Core recommendation logic for collaborative filtering.
+
+Artifact order: ALS model, CSR user-item matrix, index-to-user map, and
+index-to-product map. Matrix rows represent users and columns products.
+Filtering removes seen items and exhausted-result padding without reordering
+the surviving model-ranked candidates.
 """
 from typing import Any
 import logging
@@ -18,10 +23,10 @@ def recommend_for_user(
     n: int = DEFAULT_TOP_N,
 ) -> list[str]:
     """
-    Generate top-N content-based recommendations for a user.
+    Generate ranked ALS collaborative recommendations for a known user.
 
-    Excludes already-seen items, boosts the user's preferred category,
-    and optionally filters out paid items for users who prefer free software.
+    Excludes already-seen items and invalid padding returned when candidates
+    are exhausted. Returns fewer than n items if fewer candidates remain.
 
     Args:
     - user_id (str): The user identifier
@@ -32,7 +37,7 @@ def recommend_for_user(
     - list: A list containing the parent_asin of the recommended products for the given user id
 
     Raises:
-    - ValueError: If n is not a positive integer
+    - ValueError: If n is below 1 or the user is absent from the model mapping.
     """
     if n < 1:
         raise ValueError(f"n must be a positive integer, got {n}")

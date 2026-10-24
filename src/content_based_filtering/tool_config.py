@@ -1,5 +1,10 @@
 """
 Configuration constants for the content-based filtering module.
+
+The folder-derived MODEL_NAME identifies the engine in caches and storage.
+MODEL_ID selects a published version when downloading missing files. Artifact
+order is significant: vectorizer, item-feature matrix, row-aligned metadata.
+TF-IDF settings affect builds; rating/preference thresholds affect inference.
 """
 from pathlib import Path
 

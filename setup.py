@@ -1,5 +1,9 @@
 """
-Creates the required directory structure and artefacts
+Bootstrap local directories and download missing datasets/model artifacts.
+
+Run with `uv run python setup.py` from the repository root after configuring
+Supabase. This script performs work immediately when executed or imported;
+it is not a Python package installation script and does not train models.
 """
 from data_loader import DataLoader
 from models_loader import ModelsLoader
@@ -9,7 +13,7 @@ from config import (
     TOOLS
 )
 
-# Directories required for the forecasting pipeline.
+# Directories required for the recommendation pipeline.
 # Each directory is created if it does not already exist.
 DIRECTORIES = (
     DATA_DIR,

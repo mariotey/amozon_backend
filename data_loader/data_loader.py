@@ -4,6 +4,11 @@ Utilities for loading recommender system datasets.
 This module provides helper functions and a data loader class for retrieving datasets required by
 the recommender system. Datasets are loaded from local Parquet files when available; otherwise,
 they are downloaded from Supabase, cached locally, and returned.
+
+Cache contract: existing Parquet files are reused without checking remote
+freshness. Projected inference caches use column-based filenames unless a full
+cache exists. Full caches are never overwritten with inference-only columns.
+Download failures propagate, preventing startup with missing resources.
 """
 import pandas as pd
 from utils.supabase_utils import extract_table_from_supabase

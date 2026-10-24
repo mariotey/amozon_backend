@@ -5,6 +5,11 @@ The router calls the existing Python handlers directly. Users in the trained ALS
 mapping are offered collaborative recommendations first. Content-based filtering
 is tried next when positive reviews overlap the TF-IDF index. If neither engine
 produces recommendations, items and engine_used are None; model/data errors propagate.
+
+FastAPI owns resource lifetime; this module gets shared caches from the
+collaborative handler and calls engines directly. Empty engine results permit
+fallback; exceptions propagate. Unknown users are valid and receive null items
+and engine_used if neither engine succeeds. Popular browsing is separate.
 """
 import logging
 from typing import Any

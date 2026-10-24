@@ -1,5 +1,10 @@
 """
 Configuration constants for the collaborative filtering module.
+
+The folder-derived MODEL_NAME identifies the engine in caches and storage.
+MODEL_ID selects a published version when downloading missing files. Artifact
+order is significant: ALS model, user-item matrix, index-to-user mapping, and
+index-to-product mapping. Keep training and inference aligned with this order.
 """
 from pathlib import Path
 

@@ -4,6 +4,11 @@ Feature engineering pipeline for recommender system datasets.
 This module loads raw user review and item metadata datasets, performs data cleaning, feature
 extraction, aggregation, and transformation, and exports processed datasets for downstream
 recommender system models.
+
+Offline flow: input Parquet files -> cleaned reviews -> user/item aggregates
+-> three prepared output files. Recency is relative to the latest dataset date,
+not today. Unknown prices use -1; quality_score uses a Wilson lower bound.
+The pipeline runs on import and writes local files.
 """
 from typing import Any
 import os

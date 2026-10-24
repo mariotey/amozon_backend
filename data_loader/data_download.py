@@ -4,6 +4,10 @@ Download, preprocess, and export the Amazon Software review datasets.
 This module downloads the Amazon Software review and product metadata datasets from the Hugging
 Face Hub, performs data cleaning and normalization, and exports the processed datasets as Parquet
 files for downstream recommender system pipelines.
+
+Offline step: fetch the configured dataset slice and write input Parquet files.
+This pipeline runs at module level, including on import, and performs network
+requests and local writes. It is not called during API startup.
 """
 import os
 import pandas as pd

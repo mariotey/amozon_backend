@@ -1,50 +1,44 @@
-# Amozon Recommendation System
+# Amozon Recommendation Backend
 
-Amozon helps people discover software that is relevant to their interests. It
-uses previous customer feedback to personalise suggestions. When neither engine
-can recommend products, the API returns no recommendations.
+Amozon helps shoppers discover relevant software by using past customer reviews
+and product information to suggest products. This repository contains the backend
+service that a separate frontend, such as the Django application, calls to display
+recommendations and catalogue information.
 
-## Purpose
+## What it provides
 
-A software catalogue can contain more products than customers can comfortably
-explore. This project supports product discovery by presenting a focused list
-of suggestions through one consistent recommendation service.
+- Personalised product suggestions, with a reason for the recommendation approach used.
+- Popular products for general browsing.
+- Product details and customer reviews.
+- Shopper profiles and random shoppers for exploring the experience.
 
-## How recommendations are selected
+## How recommendations work
 
-The system follows a predictable order:
+1. **Similar shopping patterns:** use a trained model of customer preferences when
+   the shopper is supported by that model.
+2. **Product interests:** otherwise, use the characteristics of products the
+   shopper previously rated positively.
+3. **No suitable result:** return no recommendations if neither approach produces
+   suggestions. Popular products remain a separate browsing option.
 
-1. **Learn from similar customers.** For customers already supported by the
-   trained recommendation model, suggest products based on shared preferences.
-2. **Learn from the customer's interests.** When the first approach cannot
-   provide suggestions, use the characteristics of products the customer rated
-   positively.
-3. **Return no recommendations.** If neither approach produces suggestions,
-   return `null` for `items` and `engine_used`.
+The selection follows fixed rules. It does not rely on a conversational AI to
+choose the recommendation approach.
 
-Each response identifies which approach was used and explains the choice.
-The selection follows fixed rules and does not depend on a conversational AI
-making a decision.
-
-## What the project provides
-
-- Personalised software recommendations where sufficient history is available.
-- A separate popular-products endpoint for browsing the catalogue.
-- A single entry point for applications requesting recommendations.
-- An explanation of the recommendation approach used for each request.
-
-## Current scope
+## Scope and expectations
 
 The project uses the Software subset of the Amazon Reviews 2023 dataset. It
-serves recommendations from prepared customer feedback, product information,
-and trained models. New feedback affects results once the relevant data and
-models are refreshed; recommendations do not update automatically in real time.
+supports product discovery; recommendation quality and business impact still
+require evaluation before making performance claims.
 
-Results depend on the available data and products. The system can return fewer
-suggestions when suitable candidates are limited. Recommendation quality and
-business impact still need evaluation before making performance claims.
+Recommendations depend on prepared data and trained models. Updates require a
+managed data/model refresh; the service does not learn automatically from new
+feedback in real time. Some shoppers may receive fewer suggestions or none.
 
-## Further information
+Supabase stores the prepared information and model files. The backend serves
+these to the frontend through an API and is configured for Docker deployment on
+Render.
 
-[DEPLOYMENT.md](DEPLOYMENT.md) covers
-local setup, hosting, API usage, testing, and troubleshooting.
+## Technical guide
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for setup, API endpoints, deployment, testing,
+and maintenance.

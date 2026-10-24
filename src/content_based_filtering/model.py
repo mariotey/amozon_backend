@@ -24,7 +24,8 @@ def build_item_text(
     - row (Any): A pandas Series representing one row of the metadata DataFrame.
 
     Returns:
-    - str: A whitespace-joined string of all text fields.
+    - str: Title plus description/features entries when those values are lists.
+      Plain-string description/features values are currently skipped.
     """
     parts = [str(row["item_title"] or "")]
 
@@ -45,7 +46,12 @@ def build_and_save(
     Fit TF-IDF on the item corpus and persist all artifacts to disk.
 
     Args:
-    - item_df (pd.DataFrame): A DataFrame containing the items
+    - item_df (pd.DataFrame): parent_asin, item_title, description, features,
+      main_category, and is_free columns.
+
+    Saves the fitted vectorizer, sparse matrix, and row-aligned metadata in
+    MODEL_ARTEFACTS order. Resetting indices preserves matrix/metadata alignment.
+    Writes local files without uploading; unsuitable text may fail fitting.
     """
     item_meta_df = item_df.copy()
     item_meta_df["text"] = item_meta_df.apply(build_item_text, axis=1)

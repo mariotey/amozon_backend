@@ -7,6 +7,13 @@ deployment health check. Inference is serialized to limit temporary memory usage
 
 Run locally:
     uv run uvicorn app:app --reload
+
+Developer flow: lifespan loads one shared DataLoader and ModelsLoader before
+requests are accepted. Both engine modules receive these same cached objects;
+shutdown clears their references. The recommendation lock serializes inference
+to reduce temporary memory pressure. Catalogue routes read the startup snapshot,
+while user profiles and review pages query Supabase per request. HTTP handlers
+validate inputs and serialize pandas values; src.routing owns engine selection.
 """
 from contextlib import asynccontextmanager
 import json
@@ -72,6 +79,7 @@ DETAIL_FIELDS = CARD_FIELDS + [
 
 
 def _product(parent_asin: str) -> pd.Series:
+    """Find cached product metadata or raise HTTP 404 for an unknown ID."""
     catalogue = collaborative.get_data_loader().item_df
     matches = catalogue[catalogue["parent_asin"] == parent_asin]
     if matches.empty:
@@ -80,6 +88,7 @@ def _product(parent_asin: str) -> pd.Series:
 
 
 def _card_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Enrich ranked results with card metadata while preserving engine fields."""
     catalogue = collaborative.get_data_loader().item_df[CARD_FIELDS].set_index("parent_asin")
     enriched = []
     for item in items:

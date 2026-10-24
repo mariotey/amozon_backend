@@ -1,5 +1,10 @@
 """
 Utility helper functions for interfacing with Supabase functionalities.
+
+Import loads .env and creates the shared Supabase client/storage handle. Read
+helpers query tables or download artifacts; write helpers insert, upload, or
+reconcile registry/storage contents. Exceptions propagate. Reconciliation can
+delete stale registry records and orphan files and is not read-only.
 """
 import os
 import pandas as pd
@@ -34,7 +39,7 @@ def push_table_into_supabase(
     Upload a pandas DataFrame to a Supabase table in batches.
 
     Args:
-    - df (pd.DataFrame): DataFrame containing records to upload
+    - dataframe (pd.DataFrame): DataFrame containing records to upload
     - table_name (str): Name of the destination Supabase table
     - batch_size (int): Number of rows to upload per batch. Default set to 800.
     - show_progress (bool): Boolean flag to state whether to display a progress bar. Default set

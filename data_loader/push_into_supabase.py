@@ -4,6 +4,11 @@ Upload processed recommender system datasets into supabase.
 This module loads processed review, item, and user datasets from local Parquet files, performs
 data sanitization to ensure compatibility with supabase storage, and uploads the transformed
 datasets into their corresponding supabase tables.
+
+Publication step: reads prepared Parquet files, sanitizes missing/non-finite
+values, and inserts batches into Review, Item, and User. Executes on import
+and writes remotely. Inserts do not replace whole tables; repeated runs may
+fail on duplicate keys or duplicate data depending on the database schema.
 """
 import pandas as pd
 import numpy as np

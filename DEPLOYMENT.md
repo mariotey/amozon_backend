@@ -1,334 +1,143 @@
-# Technical Setup, Deployment, and Testing
+# Technical Guide
 
-For the project overview, see [README.md](README.md).
+For the business overview, see [README.md](README.md).
 
-The service exposes recommendations, random shoppers, catalogue details, popular
-items, product reviews, and a health check. FastAPI's
-`/docs`, `/redoc`, and `/openapi.json` provide generated API documentation.
-Individual engines remain callable in Python and through their CLI commands, but
-are not separate HTTP endpoints.
+## Local setup
 
-## Recommendation routing
+Use Python 3.13 and run commands from the repository root:
 
-`GET /api/v1/users/{user_id}/recommendations?n=10` uses this fixed order:
+```bash
+pip install uv
+uv sync --frozen
+```
 
-1. Try collaborative filtering if the user exists in the trained ALS mapping.
-2. If no items were returned or the user is absent from ALS, try content-based
-   filtering when at least one review rated 3 or above overlaps the TF-IDF index.
-3. Otherwise, return HTTP 200 with `items: null` and `engine_used: null`.
-   The separate popular-products endpoint remains available for catalogue browsing.
+Create a local `.env` file with these values, or set them in your environment:
 
-The first eligible engine producing items wins. There is no LLM, blended ranking,
-or arbitrary minimum-review threshold. Unexpected data/model failures propagate
-as server errors instead of silently triggering fallback. Routing and results
-use the data/model snapshot loaded at startup under the existing cache policy.
+```env
+SUPABASE_URL=https://YOUR-PROJECT.supabase.co
+SUPBASE_SECRET_KEY=YOUR_SERVER_SIDE_SECRET_KEY
+```
 
-## Project files
+Keep the existing spelling `SUPBASE_SECRET_KEY`; this is what the code reads.
+`SUPABASE_PUBLIC_KEY` is not used by the backend. Keep credentials server-side
+and out of Git.
 
-| Path | Purpose |
+```bash
+uv run uvicorn app:app --reload
+```
+
+Open http://127.0.0.1:8000/docs after startup completes. `/redoc` and
+`/openapi.json` provide alternative documentation and the API specification.
+
+## Required data and models
+
+Supabase must contain the prepared `User`, `Item`, and `Review` tables, the
+`ModelRegistry` table, and the `ModelArtefacts` storage bucket. Table schemas
+must match the outputs of `data_loader/data_transform.py`, including shopper
+aggregates, product metadata, review text, and review dates.
+
+Each engine's `tool_config.py` defines its model ID and required artifact files.
+The registry supplies storage paths; missing configured versions fall back to
+the latest registered version. Keep datasets and models compatible.
+
+Startup loads product metadata, review interactions, and both models from local
+caches, downloading missing files from Supabase. Missing resources prevent
+startup. User profiles and paginated reviews query Supabase on each request.
+
+## API endpoints
+
+All endpoints use `GET`. Replace path placeholders with actual IDs.
+
+| Path (with example parameters) | Returns |
 | --- | --- |
-| `app.py` | FastAPI routes and shared startup resources |
-| `src/routing.py` | Deterministic CF-first routing and no-recommendation responses |
-| `Dockerfile` | Python 3.13 environment, dependencies, and server startup |
-| `.dockerignore` | Excludes credentials, local environments, datasets, and models from the image |
-| `src/collaborative_filtering/` | ALS training and recommendations |
-| `src/content_based_filtering/` | TF-IDF training, recommendations, and item similarity |
-| `data_loader/`, `models_loader/` | Local caches and Supabase downloads |
-| `utils/supabase_utils.py` | Supabase queries and storage helpers |
-| `config.py` | Paths, table names, bucket name, and enabled tools |
-| `pyproject.toml`, `uv.lock` | Dependencies and locked versions |
+| `/health` | `{ "status": "ok" }` after startup succeeds. |
+| `/api/v1/randomusers?n=5` | Array of unique random `{ "user_id": "..." }` shoppers from loaded review history. |
+| `/api/v1/users/{user_id}` | Prepared shopper profile: rating/review statistics, activity, segment, and purchase statistics. |
+| `/api/v1/users/{user_id}/recommendations?n=8` | `user_id`, `engine_used`, `reason`, and `items`. Default `n` is 10. |
+| `/api/v1/popular_items?limit=5` | Product cards ordered by review count, then average rating, descending; product ID breaks ties. |
+| `/api/v1/items/{parent_asin}` | Product card plus store, popularity segment, quality score, and description. |
+| `/api/v1/items/{parent_asin}/reviews?page=1&page_size=10` | Newest reviews first; `items`, `page`, `page_size`, `total_count`, and `page_count`. |
 
-## Before you start
+Product cards contain `parent_asin`, `item_title`, `main_category`, `price`,
+`is_free`, `avg_rating`, and `num_reviews`. Recommendation items may also include
+`score`. Unknown prices use `-1`; missing metadata uses JSON `null`.
 
-You need a Supabase project containing the processed datasets and trained model
-artefacts. Local `data/` and `models/` folders are excluded from the Docker image,
-so Render must be able to download their equivalents from Supabase.
+Recommendations try collaborative filtering first, then content-based filtering
+when a review rated at least 3 overlaps the content model. If neither produces
+items, HTTP 200 contains `items: null` and `engine_used: null`. Unexpected
+model/data errors propagate as server errors.
 
-| Supabase resource | Required contents |
-| --- | --- |
-| `Item` table | `parent_asin`, `item_title`, `main_category`, `is_free`, `quality_score`, `num_reviews` |
-| `Review` table | `user_id`, `parent_asin`, `review_rating`, `recency_weight` |
-| `ModelRegistry` table | Model entries with `tool`, `model_id`, `storage_path`, and `created_at` for latest-version fallback |
-| `ModelArtefacts` bucket | All files listed in each tool's `tool_config.py`, under the corresponding registry storage path |
+`n`, `limit`, and `page_size` accept 1?100; `page` starts at 1. Invalid inputs
+return 422. Unknown shopper profiles and products return 404. Review pages beyond
+the last page return an empty array with the actual totals. Random shoppers may
+return fewer than requested when the available population is smaller.
 
-The tools are named `collaborative_filtering` and `content_based_filtering`.
-Use matching model artefacts and datasets. Each tool requests its configured
-`MODEL_ID`; if the registry has no matching entry, the loader tries the latest
-registered version for that tool. Missing or inaccessible resources prevent startup.
+The popular-products URL is `/api/v1/popular_items`, replacing
+`/api/v1/items/popular`. Update frontend callers accordingly.
 
-The application uses two environment variables:
+## Render deployment
 
-| Variable | Value |
-| --- | --- |
-| `SUPABASE_URL` | Your Supabase project URL |
-| `SUPBASE_SECRET_KEY` | Your server-side Supabase service-role key |
+1. Connect the repository as a Docker web service using the root `Dockerfile`.
+2. Add `SUPABASE_URL` and `SUPBASE_SECRET_KEY` as service environment variables.
+3. Set the health-check path to `/health`; use the Dockerfile's default command.
+4. Deploy, wait for startup to complete, then check `/health`, `/docs`, and
+   `/api/v1/popular_items?limit=5` on the deployed URL.
 
-`SUPBASE_SECRET_KEY` intentionally matches the existing spelling in the code.
-`SUPABASE_PUBLIC_KEY` is not used. Keep the service-role key private.
+The server binds to `0.0.0.0` using `PORT`, defaulting to `10000`. The Docker
+image excludes `.env`, local datasets, and models, so fresh instances need
+Supabase access. `/health` checks responsiveness, not live database connectivity.
 
-## Run locally
-
-Use Python 3.13 and run commands from the repository root.
-
-1. Install uv and the locked dependencies:
-
-   ```bash
-   pip install uv
-   uv sync --frozen
-   ```
-
-2. For local development, create a `.env` file in the repository root:
-
-   ```env
-   SUPABASE_URL=https://YOUR-PROJECT.supabase.co
-   SUPBASE_SECRET_KEY=YOUR_SERVICE_ROLE_KEY
-   ```
-
-   Alternatively, set these variables in your terminal environment. `.env` is
-   optional and is excluded from Git and Docker. Render uses dashboard settings.
-
-3. Start the API:
-
-   ```bash
-   uv run uvicorn app:app --reload
-   ```
-
-4. Wait for `Application startup complete`, then open http://127.0.0.1:8000/docs.
-   Missing data and models are downloaded during startup.
-
-To test the Docker image locally instead, start Docker Desktop and run:
+For a local Docker check:
 
 ```bash
 docker build -t amozon-backend .
-docker run --rm --memory=512m --cpus=0.1 --env-file .env -p 10000:10000 amozon-backend
+docker run --rm --env-file .env -p 10000:10000 amozon-backend
 ```
 
-Open http://localhost:10000/docs after startup completes. This uses Supabase
-downloads rather than your local dataset/model folders, like a fresh Render
-instance. The limits approximate Render Free's memory and CPU allocation.
-Stop the container with Ctrl+C.
+## Maintenance and tests
 
-## Deploy on Render
-
-1. Commit and push all application changes to your Git repository, including
-   `app.py`, `Dockerfile`, `.dockerignore`, the loader changes, `pyproject.toml`,
-   and `uv.lock`. Do not commit `.env`, local datasets, or model artefacts.
-2. Sign in to [Render](https://dashboard.render.com) and select **New > Web Service**.
-3. Connect your Git provider, select this repository, and choose the branch
-   containing your changes.
-4. Configure the service:
-
-   | Setting | Value |
-   | --- | --- |
-   | Name | For example, `amozon-backend` |
-   | Language | **Docker** |
-   | Root Directory | Leave empty |
-   | Dockerfile Path | `./Dockerfile` |
-   | Instance Type | **Free** |
-   | Docker Command | Leave empty to use the Dockerfile's CMD |
-   | Health Check Path | `/health` (under Advanced) |
-
-5. Add `SUPABASE_URL` and `SUPBASE_SECRET_KEY` under **Environment Variables**.
-   Use the values from your Supabase project; do not upload your `.env` file.
-6. Select **Create Web Service**. Do not attach a paid disk or add another service.
-   Render builds the image from the Dockerfile; no separate build/start commands
-   or manual `PORT` setting are needed. The Dockerfile binds to `0.0.0.0` and
-   uses Render's `PORT`, defaulting to 10000 locally.
-7. Watch the deployment logs. During the build, expect dependency installation.
-   During startup, expect Supabase downloads, followed by:
-
-   ```text
-   Application startup complete.
-   Uvicorn running on http://0.0.0.0:10000
-   ```
-
-   The displayed port may differ if Render sets a different `PORT`.
-8. When the service becomes **Live**, copy its assigned `https://...onrender.com`
-   URL. Use that URL as `BASE_URL` in the tests below.
-
-See [Render's Docker instructions](https://render.com/docs/docker) for the
-platform's deployment settings.
-
-## Test the deployed API
-
-### 1. Check health and API documentation
-
-Replace `BASE_URL` with your assigned service URL, including `https://`.
-Open `BASE_URL/health`. Expected HTTP status: **200**.
-
-```json
-{"status": "ok"}
-```
-
-Then open `BASE_URL/docs` for all endpoints, parameters, and interactive requests.
-Health becomes available after startup
-loading succeeds; it does not continually check Supabase connectivity. Visiting
-`/` returns 404 because no homepage is defined.
-
-Available shopper and catalogue endpoints:
-
-| Endpoint | Response |
+| Location | Responsibility |
 | --- | --- |
-| `GET /api/v1/randomusers?n=5` | Array of distinct randomly sampled `{ "user_id": "..." }` shoppers from loaded review history; returns fewer if fewer exist. |
-| `GET /api/v1/users/{user_id}` | Prepared shopper profile fetched from Supabase; unknown users return 404 and blank IDs return 422. |
-| `GET /api/v1/users/{user_id}/recommendations?n=8` | Existing `user_id`, `engine_used`, `reason`, and `items` response, with enriched product cards. |
-| `GET /api/v1/items/popular?limit=5` | Array of product cards ordered by `num_reviews` descending, then `avg_rating` descending, then product ID ascending. |
-| `GET /api/v1/items/{parent_asin}` | Product card plus `store`, `popularity_segment`, `quality_score`, and `description`. |
-| `GET /api/v1/items/{parent_asin}/reviews?page=1&page_size=10` | `items`, `page`, `page_size`, `total_count`, and `page_count`; reviews ordered by `review_date` descending and `review_id` ascending. |
+| `app.py` | HTTP routes and shared startup resources. |
+| `src/routing.py` | Recommendation selection and null fallback. |
+| `src/collaborative_filtering/`, `src/content_based_filtering/` | Model training and recommendation logic. |
+| `data_loader/`, `models_loader/`, `utils/supabase_utils.py` | Data preparation, caching, uploads, and Supabase access. |
+| `config.py` | Paths, resource names, and enabled engines. |
+| `tests/` | Routing, API contracts, and engine regression checks. |
+| `setup.py` | Local directory/cache bootstrap; executing it downloads missing resources. |
+| `pyproject.toml`, `uv.lock`, `.python-version` | Dependency declarations, locked versions, and Python version. |
+| `Dockerfile`, `.dockerignore` | Container build/start command and excluded build inputs. |
+| `.gitignore` | Excludes local secrets, datasets, models, bytecode, tool caches, and build output. |
+| `notebook/` | Exploratory notebooks; separate from the deployed API. |
 
-Product card fields are `parent_asin`, `item_title`, `main_category`, `price`,
-`is_free`, `avg_rating`, and `num_reviews`. Recommendation items retain additional
-engine fields. Prices follow the prepared dataset convention: `-1` means unknown.
-Missing metadata is serialized as JSON `null`.
+Generated `data/`, `models/`, virtual environments, Python bytecode, notebook
+checkpoints, and common test/type-check/lint caches are ignored by Git. Keep
+`uv.lock` tracked for reproducible dependency installation. `.gitignore` does
+not remove files already tracked; use `git ls-files -ci --exclude-standard` to
+check for tracked files that now match ignore rules.
 
-User details include `user_id`, `num_reviews`, `avg_rating_given`,
-`min_rating_given`, `max_rating_given`, `first_review_date`, `last_review_date`,
-`days_active`, `user_segment`, `num_verified_purchases`, `verified_purchase_ratio`,
-`avg_price_purchased`, `free_app_ratio`, and `total_helpful_votes_received`.
-This endpoint fetches one prepared profile per request; it does not recompute
-aggregates or load all user profiles into memory. Missing values are JSON `null`.
-
-`n`, `limit`, and `page_size` accept integers from 1 to 100; `page` starts at 1.
-Unknown products return 404 for both details and reviews. Existing products with
-no reviews return an empty `items` array and zero counts; pages beyond the last
-page return an empty array with the actual total and page count.
-
-Product metadata uses the startup cache. Reviews are queried directly from
-Supabase per request with exact counts and database pagination, avoiding loading
-all review text into memory. Review objects include `review_id`, `user_id`,
-`parent_asin`, `review_title`, `review_text`, `review_rating`, `review_date`,
-`verified_purchase`, and `helpful_vote`.
-
-### 2. Choose test users
-
-- **Collaborative:** a user from the deployed ALS model's `idx_to_userid_mapping.json`.
-- **Content-based:** a user absent from that mapping, with at least one review
-  rated 3 or above for an item present in the content model's `cb_meta.parquet`.
-- **No recommendations:** an unknown user ID, such as `__new_test_user__`.
-
-If local and deployed models match, print a known ALS user with:
-
-```bash
-uv run python -c "import json; from pathlib import Path; print(next(iter(json.loads(Path('models/collaborative_filtering/idx_to_userid_mapping.json').read_text()).values())))"
-```
-
-An ALS user with positive reviews still gets collaborative results first. A user
-merely existing in the Review table is not necessarily present in the ALS model.
-
-### 3. Request recommendations
-
-In `/docs`, expand **GET /api/v1/users/{user_id}/recommendations**, select
-**Try it out**, enter a test user ID and `n=3`, then select **Execute**.
-Alternatively, open this URL after replacing the hostname and `USER_ID`:
-
-```text
-https://YOUR-SERVICE.onrender.com/api/v1/users/USER_ID/recommendations?n=3
-```
-
-Expected HTTP status: **200**. Example response (illustrative values):
-
-```json
-{
-  "user_id": "EXAMPLE_USER",
-  "engine_used": "collaborative",
-  "reason": "User is present in the trained ALS model",
-  "items": [
-    {
-      "parent_asin": "EXAMPLE_ASIN",
-      "item_title": "Example software",
-      "main_category": "Software",
-      "is_free": true
-    }
-  ]
-}
-```
-
-| Test user | Expected engine when that engine produces items |
-| --- | --- |
-| Known ALS user | `collaborative` |
-| User absent from ALS with qualifying indexed positive reviews | `content_based` |
-| Unknown user or one without an eligible personalised profile | `null` |
-
-The response always contains `user_id`, `engine_used`, `reason`, and `items`.
-Item fields are `parent_asin`, `item_title`, `main_category`, `price`, `is_free`,
-`avg_rating`, and `num_reviews`;
-content-based items also include `score`. Missing metadata is JSON `null`.
-Check the `reason` if an empty personalised result led to a later engine.
-
-Without `n`, the default is 10; the range is 1 through 100. Fewer items can be
-returned when candidates are limited. If neither engine produces items,
-`items` and `engine_used` are `null`. These checks establish
-serving behavior, not recommendation quality, which needs separate evaluation.
-
-### 4. Check validation and error behavior
-
-| Test | Expected response |
-| --- | --- |
-| `n=0`, `n=101`, or `n=abc` | 422; JSON validation error |
-| Blank user ID (for example `%20`) | 422; `{"detail": "ID must not be blank"}` |
-| Unknown user | 200; `items: null` and `engine_used: null` |
-| Neither engine produces recommendations | 200; `items: null` and `engine_used: null` |
-| Unexpected data/model failure | Server error; no silent fallback |
-| `/` or a removed direct tool endpoint | 404; `{"detail": "Not Found"}` |
-
-The old collaborative, content-user, and item-similarity HTTP routes were removed.
-Clients must use the single user recommendation endpoint.
-
-## Automated routing tests
-
-Run from the repository root:
+Run the automated tests:
 
 ```bash
 uv run python -m unittest discover -s tests -v
 ```
 
-Tests use small datasets and mocked inference, without downloading resources or
-calling real models. They cover CF priority, content eligibility, empty-result
-fallback, null recommendation responses, catalogue endpoints, review pagination,
-validation, and the public HTTP contract.
+Current test caveat: `tests/test_routing.py` still references the previous
+`/api/v1/items/popular` path. Those assertions need updating to match the renamed
+endpoint; documentation updates do not change test code.
 
-## Render Free behavior and troubleshooting
-
-Render Free has 512 MB RAM and limited CPU. The app shares its models and selected
-dataset columns, uses one worker, and runs one recommendation calculation at a
-time to reduce memory use. Confirm actual container usage during deployment;
-larger datasets can exceed the free instance's memory.
-
-Free services sleep after 15 minutes without traffic. Waking up takes about a
-minute before accounting for this app's loading time. Files written at runtime
-are lost on sleep, restart, or redeploy, so data/model downloads repeat. The
-workspace's 750 monthly free instance hours are shared across free services.
-Builds and bandwidth have separate limits; Supabase has its own limits. Stay
-within included allowances to keep costs at zero. See
-[Render's free service limits](https://render.com/docs/free).
-
-| Symptom | What to check |
-| --- | --- |
-| Build fails | Read the first build error; dependency/native-library installation happens in the Dockerfile |
-| Startup fails | Verify both environment variables, exact Supabase resource names, registry entries, and stored artefacts |
-| Process is killed or runs out of memory | Check Render logs/metrics; reduce the served dataset or model size to remain on Free |
-| First request is slow | Allow the service to wake and download its resources; inspect startup logs |
-| 404 at `/` | Expected; open `/docs` or `/health` |
-| Unexpected null recommendations | Inspect `reason`, ALS membership, and qualifying reviews in the content index |
-
-The API currently has no authentication. Supabase credentials stay on the server;
-the recommendation routes accept IDs supplied by the caller.
-
-## Optional: work with models locally
-
-Serving existing models does not require `setup.py` or rebuilding either model.
-To download the full local datasets and artefacts for offline work, run:
-
-```bash
-uv run python -m setup
-```
-
-That full-data setup also requires the `User` table. To rebuild either model,
-provide the complete training datasets and run from the repository root:
+Training commands (write model files locally):
 
 ```bash
 uv run python -m src.collaborative_filtering.main --mode build
 uv run python -m src.content_based_filtering.main --mode build
 ```
 
-These commands save local artefacts; they do not publish them to Supabase.
+Training does not publish models automatically. Data preparation/upload scripts
+and `models_loader/push_into_supabase.py` handle publication separately. Refresh
+compatible caches and restart the service to serve updated data/models; restarting
+alone reuses existing local caches.
+
+For startup failures, check Supabase access, table schemas, and registered model
+files. For a 404, compare the frontend URL with `/openapi.json` and confirm the
+latest revision was deployed. A 404 at `/` is expected: there is no homepage.
