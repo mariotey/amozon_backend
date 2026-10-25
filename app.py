@@ -255,6 +255,26 @@ def item_reviews(
     return {**response, "items": _serialize_items(response["items"])}
 
 
+@app.get("/api/v1/users/{user_id}/history")
+def user_history(
+    user_id: str,
+    verified_only: bool = Query(True, description="Only reviews marked as verified purchases."),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+) -> dict[str, Any]:
+    """Reviewed products, newest first, with product card metadata under `item`.
+
+    Defaults to verified purchase reviews. Dates are review dates, not purchase
+    dates, and unreviewed purchases are unavailable. Unknown users and pages
+    beyond the end return empty items. Missing products have `item: null`.
+    This endpoint works independently of recommendation model readiness.
+    """
+    response = serving_data.user_history(
+        _validate_identifier(user_id), page, page_size, verified_only=verified_only,
+    )
+    return {**response, "items": _serialize_items(response["items"])}
+
+
 @app.get("/api/v1/users/{user_id}")
 def user_details(user_id: str) -> dict[str, Any]:
     """Fetch a shopper's prepared profile from Supabase without loading all users."""

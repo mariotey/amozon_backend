@@ -264,6 +264,90 @@ class OnDemandTests(unittest.TestCase):
             self.assertEqual(query.requested_limit, 1000)
         self.assertTrue(self.store.history("no-such-shopper").empty)
 
+    def test_user_history_defaults_to_verified_reviews_without_models_or_profile(self):
+        self.db.tables["Review"].extend([
+            {**Database.review("5", "alpha", "b", 5.), "verified_purchase": False,
+             "review_date": "2026-02-01"},
+            {**Database.review("6", "alpha", "a", 2.), "review_date": "2026-01-02"},
+            {**Database.review("7", "alpha", "c", 4.), "review_date": None},
+        ])
+        with self.client(ready=False) as client:
+            response = client.get("/api/v1/users/alpha/history?page_size=2")
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["user_id"], "alpha")
+            self.assertTrue(payload["verified_only"])
+            self.assertEqual((payload["page"], payload["page_size"]), (1, 2))
+            self.assertEqual((payload["total_count"], payload["page_count"]), (4, 2))
+            self.assertEqual([row["review_id"] for row in payload["items"]], ["6", "2"])
+            self.assertEqual(payload["items"][0]["item"]["parent_asin"], "a")
+            self.assertEqual(set(payload["items"][0]["item"]), set(CARD_FIELDS))
+            query = self.db.calls[0]
+            self.assertEqual(query.filters, [("eq", "user_id", "alpha"),
+                                             ("eq", "verified_purchase", True)])
+            self.assertEqual(query.interval, (0, 1))
+            self.assertEqual(query.orders, [("review_date", True, False), ("review_id", False, None)])
+            self.assertEqual([query.table for query in self.db.calls], ["Review", "Item"])
+            second = client.get("/api/v1/users/alpha/history?page=2&page_size=2").json()
+            self.assertEqual([row["review_id"] for row in second["items"]], ["4", "7"])
+            self.assertIsNone(second["items"][-1]["review_date"])
+
+    def test_user_history_can_include_unverified_reviews_and_preserves_missing_products(self):
+        self.db.tables["Review"].extend([
+            {**Database.review("5", "alpha", "missing", 1.), "verified_purchase": False},
+            {**Database.review("6", "alpha", "a", 2.), "verified_purchase": None},
+        ])
+        with self.client(ready=False) as client:
+            payload = client.get("/api/v1/users/alpha/history?verified_only=false").json()
+            self.assertFalse(payload["verified_only"])
+            self.assertEqual((payload["total_count"], payload["page_size"]), (4, 20))
+            self.assertEqual([row["review_id"] for row in payload["items"]], ["2", "4", "5", "6"])
+            self.assertIsNone(payload["items"][2]["item"])
+            self.assertIsNone(payload["items"][3]["verified_purchase"])
+            self.assertEqual(self.db.calls[0].filters, [("eq", "user_id", "alpha")])
+            verified = client.get("/api/v1/users/alpha/history").json()
+            self.assertEqual(verified["total_count"], 2)
+
+    def test_user_history_fills_a_bounded_page_with_lower_server_caps(self):
+        self.db.response_cap = 1
+        self.db.tables["Review"].append(Database.review("5", "alpha", "seen", 2.))
+        with self.client(ready=False) as client:
+            payload = client.get("/api/v1/users/alpha/history?page_size=2").json()
+            self.assertEqual([row["review_id"] for row in payload["items"]], ["2", "4"])
+            self.assertEqual([row["item"]["parent_asin"] for row in payload["items"]], ["seen", "a"])
+            queries = [query for query in self.db.calls if query.table == "Review"]
+            self.assertEqual([query.interval for query in queries], [(0, 1), (1, 1)])
+            last = client.get("/api/v1/users/alpha/history?page=2&page_size=2").json()
+            self.assertEqual(last["items"][0]["parent_asin"], "seen")
+            self.assertEqual(len(last["items"]), 1)
+            self.assertEqual(last["total_count"], 3)
+
+    def test_user_history_empty_results_do_not_fetch_metadata(self):
+        with self.client(ready=False) as client:
+            for path, count in (("unknown/history", 0), ("alpha/history?page=100", 2)):
+                self.db.calls.clear()
+                response = client.get("/api/v1/users/" + path)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["items"], [])
+                self.assertEqual(response.json()["total_count"], count)
+                self.assertEqual([query.table for query in self.db.calls], ["Review"])
+            self.db.tables["Review"][0]["verified_purchase"] = False
+            self.assertEqual(client.get("/api/v1/users/u/history").json()["items"], [])
+
+    def test_user_history_validation_and_upstream_failures(self):
+        with self.client(ready=False) as client:
+            for path in ("%20/history", "alpha/history?page=0", "alpha/history?page_size=0",
+                         "alpha/history?page_size=101", "alpha/history?verified_only=invalid"):
+                self.assertEqual(client.get("/api/v1/users/" + path).status_code, 422)
+            self.assertEqual(self.db.calls, [])
+            for table in ("Review", "Item"):
+                self.db.fail = {table}
+                response = client.get("/api/v1/users/alpha/history")
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.headers["Retry-After"], "5")
+                self.assertEqual(response.json(), {"detail": "Supabase request failed"})
+                self.assertNotIn("credential", response.text)
+
     def test_collaborative_wins_without_fetching_history_and_preserves_rank(self):
         self.models.model_artefacts["collaborative_filtering"][0].recommend.return_value = (
             np.array([1, 2, 0, -1]), np.array([.9, .8, -np.finfo(np.float32).max, np.nan]),
@@ -431,6 +515,7 @@ class OnDemandTests(unittest.TestCase):
             self.assertEqual(set(client.get("/openapi.json").json()["paths"]), {
                 "/health", "/ready", "/api/v1/randomusers", "/api/v1/popular_items",
                 "/api/v1/users/{user_id}", "/api/v1/users/{user_id}/recommendations",
+                "/api/v1/users/{user_id}/history",
                 "/api/v1/items/{parent_asin}", "/api/v1/items/{parent_asin}/reviews",
             })
             self.assertEqual(client.get("/docs").status_code, 200)

@@ -402,6 +402,35 @@ class ServingData:
         return {"items": response.data, "page": page, "page_size": page_size,
                 "total_count": total, "page_count": (total + page_size - 1) // page_size}
 
+    def user_history(self, user_id, page, page_size, *, verified_only=True):
+        """One page of reviewed products; verification is not a complete order history."""
+        start = (page - 1) * page_size
+        rows, total = [], 0
+        # Fill only the requested page even when Supabase caps individual responses.
+        while len(rows) < page_size:
+            query = (self.client.table(REVIEW_TABLE_NAME)
+                     .select(REVIEW_FIELDS, count="exact").eq("user_id", user_id))
+            if verified_only:
+                query = query.eq("verified_purchase", True)
+            response = self._execute(
+                query.order("review_date", desc=True, nullsfirst=False).order("review_id")
+                .range(start + len(rows), start + page_size - 1)
+            )
+            total = response.count or 0
+            rows.extend(response.data)
+            if not response.data or start + len(rows) >= total:
+                break
+
+        catalogue = {item["parent_asin"]: item for item in self.cards(
+            [row["parent_asin"] for row in rows if row.get("parent_asin") is not None]
+        )}
+        return {
+            "user_id": user_id, "verified_only": verified_only,
+            "items": [{**row, "item": catalogue.get(row.get("parent_asin"))} for row in rows],
+            "page": page, "page_size": page_size, "total_count": total,
+            "page_count": (total + page_size - 1) // page_size,
+        }
+
     def cards(self, ids):
         ids = list(dict.fromkeys(ids))
         if not ids:

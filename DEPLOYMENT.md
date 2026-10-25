@@ -189,6 +189,7 @@ All endpoints use `GET`. Replace path placeholders with actual IDs.
 | `/ready` | Model readiness; 200 when ready, otherwise 503. Serving data is `on_demand`. |
 | `/api/v1/randomusers?n=5` | At most n distinct random `{ "user_id": "..." }` shoppers selected in Supabase from review history. |
 | `/api/v1/users/{user_id}` | Prepared shopper profile: rating/review statistics, activity, segment, and purchase statistics. |
+| `/api/v1/users/{user_id}/history?verified_only=true&page=1&page_size=20` | Paginated verified purchase reviews with product metadata; works independently of models. |
 | `/api/v1/users/{user_id}/recommendations?n=8` | `user_id`, `engine_used`, `reason`, and `items`. Default `n` is 10. |
 | `/api/v1/popular_items?limit=5` | Product cards ordered by review count, then average rating, descending; product ID breaks ties. |
 | `/api/v1/items/{parent_asin}` | Product card plus store, popularity segment, quality score, and description. |
@@ -202,6 +203,24 @@ Recommendations try collaborative filtering first, then content-based filtering
 when a review rated at least 3 overlaps the content model. If neither produces
 items, HTTP 200 contains `items: null` and `engine_used: null`. Unexpected
 model/data errors propagate as server errors.
+
+Shopper history defaults to `verified_only=true`; use `false` to include all
+reviews. Results are filtered in Supabase by `user_id` and, when requested,
+`verified_purchase=true`, ordered by `review_date` descending (null dates last)
+then `review_id` ascending. It returns `user_id`, `verified_only`, `items`,
+`page`, `page_size`, `total_count`, and `page_count`. Each entry contains the
+review fields and an `item` object with product card fields (or `null` if the
+product is missing). Counts refer to matching reviews, not distinct products
+or orders. Repeated reviews of a product remain separate records. Unknown users,
+users without verified reviews, and pages beyond the end return HTTP 200 with
+empty `items`; no User aggregate or model membership is required. Database
+failures return 503, including failures fetching product metadata.
+
+This is review-based history from the configured dataset slice, not complete
+order history. `review_date` is not a purchase date, and Item prices are not
+historical prices paid. No order IDs, quantities, or unreviewed purchases are
+available. The endpoint follows the existing public demo shopper-ID access
+model. No database migration or live database update is required by this route.
 
 `n`, `limit`, and `page_size` accept 1–100; `page` starts at 1. Invalid inputs
 return 422. Unknown shopper profiles and products return 404. Review pages beyond
