@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from copy import deepcopy
+import json
 import os
 from threading import Barrier, Event, Lock
 import time
@@ -247,6 +248,83 @@ class OnDemandTests(unittest.TestCase):
             self.db.tables["Item"] = []
             self.assertEqual(client.get("/api/v1/randomusers").json(), [])
             self.assertEqual(client.get("/api/v1/popular_items").json(), [])
+
+    def test_image_serialization_preserves_dictionaries_and_handles_bad_values(self):
+        images = {"variant": ["MAIN", "PT01"], "large": ["https://example.com/Main.JPG", None],
+                  "hi_res": [None, None], "thumb": [None, "https://example.com/Other.jpg"]}
+        for value, expected in (
+            (json.dumps(images), images), (images, images), ({}, {}), ("{}", {}),
+            (None, None), (np.nan, None), ("", None), ("{bad json", None),
+            ("[]", None), ([], None), ("null", None), ("42", None), ('"url"', None),
+        ):
+            with self.subTest(value=value):
+                rows = [{"parent_asin": "a", "score": .9, "item_images": value}]
+                history = [{"review_id": "r", "item": {"parent_asin": "a", "item_images": value}},
+                           {"review_id": "missing", "item": None}]
+                result = app._serialize_items(rows)
+                history_result = app._serialize_items(history)
+                self.assertEqual(result[0]["item_images"], expected)
+                self.assertEqual(history_result[0]["item"]["item_images"], expected)
+                self.assertEqual(result[0]["score"], .9)
+                self.assertIsNone(history_result[1]["item"])
+                self.assertNotIn("item_images", history_result[0])
+                self.assertIs(rows[0]["item_images"], value)  # No mutation of fetched data.
+
+    def test_all_product_endpoints_return_decoded_images_without_changing_stored_data(self):
+        expected = {}
+        for item in self.db.tables["Item"]:
+            images = {"variant": ["MAIN"], "large": [f"https://example.com/{item['parent_asin']}.jpg"],
+                      "hi_res": [None], "thumb": [None]}
+            expected[item["parent_asin"]] = images
+            item["item_images"] = json.dumps(images)
+
+        def check(items):
+            self.assertTrue(items)
+            for item in items:
+                self.assertEqual(item["item_images"], expected[item["parent_asin"]])
+                self.assertTrue(set(CARD_FIELDS) <= set(item))
+
+        with self.client(ready=False) as client:
+            check(client.get("/api/v1/popular_items").json())
+            check([client.get("/api/v1/items/a").json()])
+            check([row["item"] for row in client.get("/api/v1/users/alpha/history").json()["items"]])
+            self.gate.set()
+            self.wait_ready(client, 200)
+            for user, engine in (("u", "collaborative"), ("alpha", "content_based")):
+                response = client.get(f"/api/v1/users/{user}/recommendations").json()
+                self.assertEqual(response["engine_used"], engine)
+                check(response["items"])
+                if engine == "content_based":
+                    self.assertTrue(all("score" in item for item in response["items"]))
+        self.assertTrue(all(isinstance(item["item_images"], str) for item in self.db.tables["Item"]))
+        self.assertTrue(all("item_images" in query.fields.split(",")
+                            for query in self.db.calls if query.table == "Item"))
+
+    def test_bad_images_do_not_break_product_responses(self):
+        for item, value in zip(self.db.tables["Item"], ("{broken", None, "[]", "")):
+            item["item_images"] = value
+        with self.client() as client:
+            for path in ("/api/v1/popular_items", "/api/v1/items/a", "/api/v1/users/alpha/history",
+                         "/api/v1/users/u/recommendations", "/api/v1/users/alpha/recommendations"):
+                with self.subTest(path=path):
+                    response = client.get(path)
+                    self.assertEqual(response.status_code, 200)
+                    payload = response.json()
+                    items = payload if isinstance(payload, list) else payload.get("items", [payload])
+                    for row in items:
+                        product = row.get("item", row)
+                        self.assertIsNone(product["item_images"])
+                        self.assertIsNotNone(product["item_title"])
+
+    def test_existing_image_objects_are_accepted_by_product_endpoints(self):
+        images = {"variant": ["MAIN"], "large": ["https://example.com/Original.JPG"],
+                  "hi_res": [None], "thumb": [None]}
+        for item in self.db.tables["Item"]:
+            item["item_images"] = deepcopy(images)
+        with self.client(ready=False) as client:
+            self.assertEqual(client.get("/api/v1/items/a").json()["item_images"], images)
+            history = client.get("/api/v1/users/alpha/history").json()
+            self.assertTrue(all(row["item"]["item_images"] == images for row in history["items"]))
 
     def test_history_is_filtered_and_fully_keyset_paginated_even_with_short_pages(self):
         self.db.tables["Review"].extend(Database.review(str(i), "alpha", "c", 2.) for i in range(5, 12))

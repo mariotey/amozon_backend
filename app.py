@@ -160,9 +160,24 @@ def _validate_identifier(identifier: str) -> str:
     return identifier.strip()
 
 
+def _decode_item_images(value: Any) -> dict[str, Any] | None:
+    """Accept a stored JSON string or object, preserving the source image dictionary."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    return value if isinstance(value, dict) else None
+
+
 def _serialize_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert pandas/NumPy scalars and missing metadata into JSON-compatible values."""
-    return json.loads(pd.DataFrame(items).to_json(orient="records"))
+    """Serialize values and decode images on products and nested history products."""
+    records = json.loads(pd.DataFrame(items).to_json(orient="records"))
+    for row in records:
+        for product in (row, row.get("item")):
+            if isinstance(product, dict) and "item_images" in product:
+                product["item_images"] = _decode_item_images(product["item_images"])
+    return records
 
 
 def _product(parent_asin: str) -> dict:

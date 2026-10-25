@@ -196,8 +196,16 @@ All endpoints use `GET`. Replace path placeholders with actual IDs.
 | `/api/v1/items/{parent_asin}/reviews?page=1&page_size=10` | Newest reviews first; `items`, `page`, `page_size`, `total_count`, and `page_count`. |
 
 Product cards contain `parent_asin`, `item_title`, `main_category`, `price`,
-`is_free`, `avg_rating`, and `num_reviews`. Recommendation items may also include
+`is_free`, `avg_rating`, `num_reviews`, and `item_images`. Recommendation items may also include
 `score`. Unknown prices use `-1`; missing metadata uses JSON `null`.
+
+`item_images` is returned as an object preserving Amazon's parallel arrays
+(`variant`, `large`, `hi_res`, `thumb`). Stored JSON strings are decoded only
+for the API response; existing objects are preserved. Missing, malformed, or
+non-object values return `null`. Product details, popular products, both
+recommendation paths, and each history entry's nested `item` include this field.
+No new database columns, upload changes, or data migration are needed. Frontend
+rendering must select an image URL and handle missing images separately.
 
 Recommendations try collaborative filtering first, then content-based filtering
 when a review rated at least 3 overlaps the content model. If neither produces

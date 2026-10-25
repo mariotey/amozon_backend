@@ -310,7 +310,7 @@ def download_artefacts_from_supabase(
 
 # Targeted API queries; bulk extraction above remains available to offline workflows.
 logger = logging.getLogger(__name__)
-CARD_FIELDS = ["parent_asin", "item_title", "main_category", "price", "is_free", "avg_rating", "num_reviews"]
+CARD_FIELDS = ["parent_asin", "item_title", "main_category", "price", "is_free", "avg_rating", "num_reviews", "item_images"]
 DETAIL_FIELDS = CARD_FIELDS + ["store", "popularity_segment", "quality_score", "description"]
 HISTORY_FIELDS = ["user_id", "parent_asin", "review_rating", "recency_weight"]
 PROFILE_FIELDS = (
