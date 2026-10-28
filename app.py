@@ -1,17 +1,8 @@
-"""
-FastAPI entry points for the Amozon recommendation tools.
+"""FastAPI storefront: named model bundles and on-demand Supabase queries.
 
-The default user endpoint delegates deterministic CF-first selection to src.routing.
-The API exposes recommendations, catalogue browsing, shoppers, reviews, and a
-deployment health check. Inference is serialized to limit temporary memory usage.
-
-Run locally:
-    uv run uvicorn app:app --reload
-
-Serving tables are queried on demand. A single background worker loads only
-trained artifacts; browsing is independent of model readiness. Shopper history
-is request-local and fetched only for content fallback. Synchronous routes run
-database operations off the event loop. Inference is serialized to limit RAM.
+Run uvicorn app:app. Model loading happens once in the background; browsing stays
+available while it loads. Recommendation code receives explicit bundles and
+request-local history and never loads notebook data or runs training.
 """
 import asyncio
 import json
@@ -222,16 +213,16 @@ def user_recommendations(
     n: int = Query(10, ge=1, le=100),
 ) -> dict[str, Any]:
     """
-    Try collaborative then content-based recommendations; return null items if unavailable.
+    Try collaborative, content-based, then unseen popular products.
 
     Args:
     - user_id (str): User identifier, including users unknown to the trained models.
     - n (int): Maximum number of recommendations, from 1 to 100 (default 10).
 
     Returns:
-    - dict[str, Any]: user_id, engine_used, reason, and items. Unavailable recommendations
-                      have null items and engine_used, with HTTP 200. Unexpected inference errors remain
-                      server errors and do not silently trigger fallback.
+    - dict[str, Any]: user_id, engine_used, reason, and items. Popular fallback is
+                      labeled explicitly and can return an empty list if no unseen
+                      products remain. Unexpected inference errors remain server errors.
     """
     user_id = _validate_identifier(user_id)
     models = _model_resources().require()
@@ -239,6 +230,7 @@ def user_recommendations(
         result = routing.get_user_recommendations(
             user_id, n=n, model_artefacts=models.model_artefacts,
             history_loader=serving_data.history, item_loader=serving_data.cards,
+            popular_loader=serving_data.popular_items,
             inference_lock=_inference_lock,
             user_index=models.user_index, content_indexes=models.content_indexes,
         )
@@ -299,17 +291,7 @@ def user_details(user_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="User not found")
     return _serialize_items([response])[0]
 
-#################################################################################################
-# Helper Endpoints for Frontend
-#################################################################################################
-
 @app.get("/api/v1/randomusers")
 def random_users(n: int = Query(5, ge=1, le=100)) -> list[dict[str, Any]]:
     """Sample distinct eligible shoppers inside Supabase, transferring at most n IDs."""
     return serving_data.random_users(n)
-
-
-@app.get("/api/v1/popular_items")
-def popular_items(limit: int = Query(5, ge=1, le=100)) -> list[dict[str, Any]]:
-    """Rank by review count, then average rating, with stable product-ID ties."""
-    return _serialize_items(serving_data.popular_items(limit))

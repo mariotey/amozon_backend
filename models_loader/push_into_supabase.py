@@ -1,58 +1,31 @@
-"""
-Upload recommender system model artefacts into supabase.
-
-This module discovers available recommender system tools, validates the presence of their locally
-generated model artefacts, registers new model versions in the model registry, and uploads the
-artefacts into supabase Storage.
-
-The upload workflow includes:
-- Discovering tool configurations through each tool's "tool_config.py".
-- Validating that all expected model artefacts are available locally.
-- Creating a new model registry entry with a unique model identifier.
-- Uploading model artefacts to the corresponding Supabase Storage path.
-
-This module assumes that model artefacts have already been generated and saved locally before the
-upload process begins.
-
-Executes on import. Validates local engine artifacts, creates a registry version,
-and uploads files. Registry creation reconciles storage and can delete stale
-registry rows and orphaned files. Publication is not transactional: registry
-insertion precedes uploads, so failures can leave an incomplete model version.
-"""
+"""Explicit publication of a selected local model bundle; import has no effects."""
 import importlib
-from utils.supabase_utils import push_artefacts_into_registry, push_artefacts_into_supabase
-from config import (
-    REPO_ROOT, MODEL_ARTEFACT_DIR,
-    MODELREGISTRY_TABLE_NAME
-)
+from pathlib import Path
+import uuid
 
-for tool_dir in MODEL_ARTEFACT_DIR.iterdir():
-    tool_name = tool_dir.name
+from config.ml_config import MODEL_ARTEFACT_DIR, MODELREGISTRY_TABLE_NAME, TOOLS
+from .models_loader import load_model, validate_model
 
-    # Skip directories that do not define a `tool_config.py`.
-    try:
-        config_module = importlib.import_module(
-            f"src.{tool_name}.tool_config"
-        )
-    except ModuleNotFoundError:
-        continue
 
-    model_artefacts_dict = config_module.MODEL_ARTEFACTS
+def publish_model(tool_name: str, path: str | Path | None = None) -> str:
+    """Upload a validated bundle, then register it. Return its ID for api_config.MODEL_IDS.
 
-    # Check whether all expected artefacts exist locally.
-    missing_files = [
-        filename
-        for filename in model_artefacts_dict.values()
-        if not (tool_dir / filename).exists()
-    ]
+    Call deliberately after selecting a model; no existing model is deleted and
+    no publication happens during fitting, notebook evaluation, or app startup.
+    """
+    if tool_name not in TOOLS:
+        raise ValueError(f"Unknown recommendation tool: {tool_name}")
+    settings = importlib.import_module(f"src.{tool_name}.tool_config")
+    path = Path(path) if path is not None else MODEL_ARTEFACT_DIR / tool_name / settings.MODEL_FILENAME
+    validate_model(load_model(path), tool_name)
+    from utils.supabase_utils import SUPABASE_CLIENT, ARTEFACTS_STORAGE
 
-    if missing_files:
-        raise ValueError(
-            "Missing Model artefacts! Make sure that artefacts are properly generated before any push is made to supabase"
-        )
-    else:
-        _, storage_path = push_artefacts_into_registry(tool_name)
-
-        push_artefacts_into_supabase(tool_dir, model_artefacts_dict, storage_path)
-
-    print("\nSuccessful push of Model artefacts into supabase!\n")
+    model_id = str(uuid.uuid4())
+    storage_path = f"{tool_name}/{model_id}"
+    with path.open("rb") as stream:
+        ARTEFACTS_STORAGE.upload(path=f"{storage_path}/{settings.MODEL_FILENAME}", file=stream)
+    # An incomplete upload must never be advertised in the registry.
+    SUPABASE_CLIENT.table(MODELREGISTRY_TABLE_NAME).insert({
+        "model_id": model_id, "tool": tool_name, "storage_path": storage_path,
+    }).execute()
+    return model_id

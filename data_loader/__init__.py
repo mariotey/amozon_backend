@@ -1,10 +1,7 @@
-"""
-Data processing utilities for recommender system pipelines.
+"""Data helpers for notebook-driven preparation and model experiments."""
+from .data_loader import DataLoader, RecommendationData, load_data
+from .data_download import download_data
+from .data_transform import transform_data
+from .train_test_split import train_test_split
 
-This package provides utilities for downloading, loading, transforming, and uploading recommender
-system datasets. It includes functionality for retrieving raw datasets, performing feature
-engineering, managing local dataset caches, and persisting processed datasets into supabase.
-
-The package exposes dataset loading utilities through the package namespace.
-"""
-from .data_loader import *
+__all__ = ["DataLoader", "RecommendationData", "load_data", "download_data", "transform_data", "train_test_split"]

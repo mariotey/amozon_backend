@@ -1,25 +1,19 @@
 """
 Core recommendation logic for collaborative filtering.
 
-Artifact order: ALS model, CSR user-item matrix, index-to-user map, and
-index-to-product map. Matrix rows represent users and columns products.
+Named bundle: ALS model, CSR interaction matrix, user IDs, and product IDs. Matrix rows represent users and columns products.
 Filtering removes seen items and exhausted-result padding without reordering
 the surviving model-ranked candidates.
 """
-from typing import Any
-import logging
 import numpy as np
-import pandas as pd
-import scipy.sparse
 from .tool_config import (
     DEFAULT_TOP_N
 )
 
-logger = logging.getLogger(__name__)
 
 def recommend_for_user(
     user_id: str,
-    artefacts: tuple[Any, ...],
+    artefacts: dict,
     n: int = DEFAULT_TOP_N,
     *,
     user_index: dict[str, int] | None = None,
@@ -32,7 +26,7 @@ def recommend_for_user(
 
     Args:
     - user_id (str): The user identifier
-    - artefacts (tuple): Loaded artefacts of the tool
+    - artefacts (dict): Named model bundle
     - n (int): Number of recommendations to return
 
     Returns:
@@ -44,10 +38,12 @@ def recommend_for_user(
     if n < 1:
         raise ValueError(f"n must be a positive integer, got {n}")
 
-    model, user_item_matrix, idx_to_userid, idx_to_itempasin = artefacts
+    model = artefacts["model"]
+    user_item_matrix = artefacts["interactions"]
+    user_ids, product_ids = artefacts["user_ids"], artefacts["item_ids"]
 
     # The API reuses its model-owned inverse map; standalone callers keep the fallback.
-    userid_to_idx = user_index if user_index is not None else {v: k for k, v in idx_to_userid.items()}
+    userid_to_idx = user_index if user_index is not None else {value: i for i, value in enumerate(user_ids)}
 
     # Check if user_id is valid or not
     user_idx = userid_to_idx.get(user_id)
@@ -57,10 +53,17 @@ def recommend_for_user(
 
     # Reuse the same sparse row for inference and seen-item filtering.
     user_items = user_item_matrix[np.int32(user_idx)]
+    # An all-neutral/disliked history has no positive preference to personalize
+    # from. Avoid presenting arbitrary tied scores as recommendations.
+    if not np.any(user_items.data > 0):
+        return []
+    available = len(product_ids) - len(user_items.indices)
+    if available <= 0:
+        return []
     recomm_idx, recomm_scores = model.recommend(
         userid=np.int32(user_idx),
         user_items=user_items,
-        N=n
+        N=min(n, available)
     )
 
     # Returns the parent_asin of the recommended items
@@ -68,8 +71,22 @@ def recommend_for_user(
     # include already-seen products, so only return finite, unseen candidates.
     seen_idx = set(user_items.indices)
     return [
-        idx_to_itempasin[i]
+        product_ids[i]
         for i, score in zip(recomm_idx, recomm_scores)
-        if i in idx_to_itempasin and i not in seen_idx and np.isfinite(score)
+        if 0 <= i < len(product_ids) and i not in seen_idx and np.isfinite(score)
         and score > -np.finfo(np.float32).max
     ]
+
+
+def evaluate(artefacts: dict, data, k: int = DEFAULT_TOP_N) -> dict:
+    """Evaluate CF alone on its prepared supported population; never fit or save."""
+    from src.metrics import evaluate_predictions
+
+    index = {value: i for i, value in enumerate(artefacts["user_ids"])}
+    predictions = {
+        user: recommend_for_user(user, artefacts, n=k, user_index=index) if user in index else []
+        for user in data.targets.user_id.unique()
+    }
+    result = evaluate_predictions(predictions, data.targets, k)
+    result["summary"].update(excluded_targets=data.excluded_targets, excluded_users=data.excluded_users)
+    return result

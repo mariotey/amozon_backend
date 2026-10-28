@@ -1,107 +1,57 @@
-"""
-ALS model building, persistence, and loading for collaborative filtering.
-"""
-import pandas as pd
-import scipy.sparse
-from sklearn.preprocessing import MinMaxScaler
+"""Prepare ratings and fit ALS in memory. Saving is an explicit notebook step."""
 import implicit
-from models_loader import save_local_artefacts
+import numpy as np
+import pandas as pd
+from scipy.sparse import csr_matrix
+from threadpoolctl import threadpool_limits
+
+from utils.review_history import latest_reviews
 from .tool_config import (
-    ALS_FACTORS, ALS_REG, ALS_ITERA,
-    MODEL_NAME,
-    MODEL_ARTEFACTS
+    ALS_CONFIDENCE_SCALE, ALS_FACTORS, ALS_ITERA, ALS_NEGATIVE_RATING_THRESHOLD,
+    ALS_NUM_THREADS, ALS_POSITIVE_RATING_THRESHOLD, ALS_RANDOM_STATE, ALS_REG,
 )
 
-def build_and_save(
-    item_df: pd.DataFrame,
-    user_item_df: pd.DataFrame
-) -> None:
-    """
-    Build the ALS collaborative filtering model from raw interaction data and persist all required
-    artifacts to disk.
 
-    Args:
-    - item_df (pd.DataFrame): Product IDs, image/video counts, and price.
-    - user_item_df (pd.DataFrame): User/product IDs, rating, helpfulness, recency,
-      review word counts, and review image counts.
+def prepare_training_data(items: pd.DataFrame, history: pd.DataFrame) -> tuple:
+    """Build aligned IDs and signed confidences; neutral entries remain seen."""
+    if "parent_asin" not in items or items.empty or history.empty:
+        raise ValueError("ALS requires nonempty item metadata and history")
+    if not items.parent_asin.is_unique or not items.parent_asin.map(
+        lambda value: isinstance(value, str) and bool(value.strip()) and value == value.strip()
+    ).all():
+        raise ValueError("Item IDs must be unique, nonempty, trimmed strings")
+    if "review_date" not in history:
+        raise ValueError("ALS history requires review_date")
+    past = latest_reviews(history)
+    past = past.loc[past.parent_asin.isin(items.parent_asin)]
+    if past.empty:
+        raise ValueError("History has no products in the catalogue")
+    users, products = sorted(past.user_id.unique()), sorted(past.parent_asin.unique())
+    user_index = {value: i for i, value in enumerate(users)}
+    item_index = {value: i for i, value in enumerate(products)}
+    ratings = past.review_rating.to_numpy(dtype=float)
+    confidence = 1 + ALS_CONFIDENCE_SCALE * np.abs(ratings - 3) / 2
+    weights = np.where(ratings >= ALS_POSITIVE_RATING_THRESHOLD, confidence,
+                       np.where(ratings <= ALS_NEGATIVE_RATING_THRESHOLD, -confidence, 0))
+    matrix = csr_matrix((weights.astype(np.float32), (
+        past.user_id.map(user_index).to_numpy(), past.parent_asin.map(item_index).to_numpy(),
+    )), shape=(len(users), len(products)))
+    matrix.sort_indices()
+    # Keep explicit zeros: their column indices exclude neutral reviewed products.
+    return matrix, users, products
 
-    Features are min-max scaled, price is inverted, and their unweighted mean
-    becomes an interaction score. Repeated user/product pairs are averaged.
-    Categorical codes define matrix indices. Saves ALS, its interaction matrix,
-    and both ID maps locally in MODEL_ARTEFACTS order; does not upload them.
-    """
-    scaler = MinMaxScaler()
 
-    # Merge user interactions with item features
-    merged_df = (
-        user_item_df[[
-            "user_id", "parent_asin", "helpful_vote", "recency_weight", "review_word_count", "num_review_img", "review_rating"
-        ]]
-        .merge(
-            item_df[["parent_asin", "num_item_img", "num_item_videos", "price"]],
-            how="left",
-            on="parent_asin"
+def fit(items: pd.DataFrame, history: pd.DataFrame, *, factors: int = ALS_FACTORS,
+        regularization: float = ALS_REG, iterations: int = ALS_ITERA,
+        random_state: int = ALS_RANDOM_STATE) -> dict:
+    """Fit only the supplied history; return a complete named serving bundle."""
+    matrix, users, products = prepare_training_data(items, history)
+    if not np.any(matrix.data > 0):
+        raise ValueError("ALS requires at least one positive historical preference")
+    with threadpool_limits(limits=1, user_api="blas"):
+        model = implicit.als.AlternatingLeastSquares(
+            factors=factors, regularization=regularization, iterations=iterations,
+            alpha=1.0, random_state=random_state, use_gpu=False, num_threads=ALS_NUM_THREADS,
         )
-    )
-
-    # Normalize feature columns (Min-Max scaling)
-    cols_to_norm = [
-        col for col in merged_df.columns
-        if col not in ["user_id", "parent_asin"]
-    ]
-
-    scaled = scaler.fit_transform(merged_df[cols_to_norm])
-    merged_df[cols_to_norm] = scaled
-
-    # Invert price explicitly inside feature list
-    merged_df["price"] = 1 - merged_df["price"]
-
-    # Compute interaction score (unweighted mean, each feature contributes equally)
-    merged_df["interaction"] = merged_df[cols_to_norm].mean(axis=1)
-
-    # Aggregate to single score per (user, item)
-    merged_df = (
-        merged_df
-        .groupby(["user_id","parent_asin"], as_index=False)["interaction"].mean()
-    )
-
-    # Create categorical codes
-    user_id_cats = merged_df["user_id"].astype("category")
-    item_pasin_cats = merged_df["parent_asin"].astype("category")
-
-    merged_df["userid_idx"] = user_id_cats.cat.codes
-    merged_df["itempasin_idx"] = item_pasin_cats.cat.codes
-
-    # Mapping dictionaries
-    idx_to_userid = dict(enumerate(user_id_cats.cat.categories))
-    idx_to_itempasin = dict(enumerate(item_pasin_cats.cat.categories))
-
-    # Build the sparse user-item matrix
-    interaction_matrix = scipy.sparse.csr_matrix(
-        (
-            merged_df["interaction"],
-            (merged_df["userid_idx"], merged_df["itempasin_idx"])
-        ),
-        shape=(
-            len(user_id_cats.cat.categories),
-            len(item_pasin_cats.cat.categories)
-        )
-    ).astype("float32")
-
-    # Train ALS to learn latent representations for users and items
-    model = implicit.als.AlternatingLeastSquares(
-        factors = ALS_FACTORS,
-        regularization = ALS_REG,
-        iterations = ALS_ITERA
-    )
-    model.fit(interaction_matrix)
-
-    # Persist artifacts to disk
-    artefacts = (
-        model,
-        interaction_matrix,
-        idx_to_userid,
-        idx_to_itempasin
-    )
-
-    save_local_artefacts(MODEL_NAME, artefacts, MODEL_ARTEFACTS)
+        model.fit(matrix, show_progress=False)
+    return {"model": model, "interactions": matrix, "user_ids": users, "item_ids": products}

@@ -1,269 +1,102 @@
-"""
-Utilities for loading and managing recommender system model artefacts.
-
-This module provides functionality for reading, saving, and loading model artefacts required by
-recommender system tools. Model artefacts are loaded from local storage when available; otherwise,
-they are downloaded from supabase and cached locally.
-
-The module also provides "ModelsLoader", which dynamically discovers available recommender tools,
-loads their configurations, and retrieves the corresponding model artefacts.
-
-Artifact tuple positions follow MODEL_ARTEFACTS insertion order; training and
-inference must agree on this order. JSON keys become integer matrix indices.
-Only missing files trigger downloads; existing caches are not checked against
-remote model versions. Load joblib artifacts only from trusted sources.
-"""
-import numpy as np
-import pandas as pd
-import joblib
-import json
-import scipy.sparse
-from scipy.sparse import isspmatrix_csr
+"""Save/load one named bundle per algorithm and validate serving alignment."""
 import importlib
 from pathlib import Path
-from typing import Any
-from types import ModuleType
+from tempfile import NamedTemporaryFile
 from threading import Event
-from utils.supabase_utils import download_artefacts_from_supabase
-from config import (
-    REPO_ROOT,
-    MODEL_ARTEFACT_DIR,
-    TOOLS
-)
 
-def read_local_artefacts(
-    filename_dir: Path,
-    model_artefacts_dict: dict[str, str],
-    stop_event: Event | None = None,
-) -> tuple[Any, ...]:
-    """
-    Load model artefacts from the local directory.
+import joblib
+import numpy as np
+from scipy.sparse import isspmatrix_csr
 
-    Args:
-    - filename_dir (Path): Directory containing the model artefacts
-    - model_artefacts_dict (dict[str, str]): Mapping of artefact names to filenames
-
-    Returns:
-    - tuple: Loaded artefacts in the same order as `model_artefacts_dict.values()`
-    """
-    model_artefacts = []
-
-    for filename in model_artefacts_dict.values():
-        if stop_event is not None and stop_event.is_set():
-            raise InterruptedError("Model loading stopped")
-        filepath = filename_dir / filename
-        suffix = filepath.suffix
-
-        if suffix == ".joblib":
-            artefact = joblib.load(filepath)
-
-        elif suffix == ".npz":
-            artefact = scipy.sparse.load_npz(filepath)
-
-        elif suffix == ".json":
-            with open(filepath, encoding="utf-8") as f:
-                artefact = {int(k): v for k, v in json.load(f).items()}
-
-        elif suffix == ".parquet":
-            artefact = pd.read_parquet(filepath)
-
-        else:
-            raise ValueError(
-                f"Unsupported model artefact suffix '{suffix}' for '{filepath.name}'. "
-            )
-
-        model_artefacts.append(artefact)
-
-    return tuple(model_artefacts)
-
-def save_local_artefacts(
-    tool_name: str,
-    model_artefacts: tuple[Any, ...],
-    model_artefacts_dict: dict[str, str],
-) -> None:
-    """
-    Save model artefacts to the local directory.
-
-    Args:
-    - tool_name (str): Name of the tool
-    - model_artefacts (tuple): Loaded artefacts in the same order as `model_artefacts_dict.values()`
-    - model_artefacts_dict (dict[str, str]): Mapping of artefact names to filenames
-
-    Return:
-    - None
-    """
-    tool_artefact_dir = MODEL_ARTEFACT_DIR / tool_name
-    tool_artefact_dir.mkdir(parents=True, exist_ok=True)
-
-    for artefact, filename in zip(model_artefacts, model_artefacts_dict.values()):
-        filepath = tool_artefact_dir / filename
-        suffix = filepath.suffix
-
-        if suffix == ".joblib":
-            joblib.dump(artefact, filepath)
-
-        elif suffix == ".npz":
-             scipy.sparse.save_npz(filepath, artefact)
-
-        elif suffix == ".json":
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump({str(k): v for k, v in artefact.items()}, f)
-
-        elif suffix == ".parquet":
-            artefact.to_parquet(filepath, index=False)
-
-        else:
-            raise ValueError(
-                f"Unsupported model artefact suffix '{suffix}' for '{filepath.name}'. "
-            )
-
-    print("Artefacts successfully saved in local drive.\n")
-
-def load_artefacts(
-    tool_config: ModuleType,
-    stop_event: Event | None = None,
-) -> tuple[Any, ...]:
-    """
-    Load model artefacts for a configured recommender tool.
-
-    Retrieves model configuration from the provided "tool_config" module, including the tool name,
-    model identifier, and artefact mapping. The function first checks whether all expected
-    artefacts are available in the local cache. If any artefacts are missing, they are downloaded
-    from supabase and saved locally before being loaded.
-
-    Args:
-    - tool_config (module): Tool configuration module containing:
-        - MODEL_NAME (str): Name of the recommender tool
-        - MODEL_ID (str): Unique identifier of the model stored in Supabase
-        - MODEL_ARTEFACTS (dict[str, str]): Mapping of artefact names to their corresponding
-                                            filenames
-
-    Returns:
-    - tuple[Any, ...]: Loaded model artefacts in the same order as defined by
-                       `MODEL_ARTEFACTS.values()`
-    """
-    if stop_event is not None and stop_event.is_set():
-        raise InterruptedError("Model loading stopped")
-    tool_name = tool_config.MODEL_NAME
-    model_id = tool_config.MODEL_ID
-    model_artefacts_dict = tool_config.MODEL_ARTEFACTS
-
-    # Directory containing the tool's model artefacts.
-    tool_artefact_dir = MODEL_ARTEFACT_DIR / tool_name
-    tool_artefact_dir.mkdir(parents=True, exist_ok=True)
-
-    # Check whether all expected artefacts exist locally.
-    missing_files = [
-        filename
-        for filename in model_artefacts_dict.values()
-        if not (tool_artefact_dir / filename).exists()
-    ]
-
-    if missing_files:
-        print(f"Missing {len(missing_files)} artefacts for `{tool_name}`. ")
-
-        # Download the latest artefacts and cache them locally.
-        download_artefacts_from_supabase(tool_name, model_id, model_artefacts_dict, stop_event=stop_event)
-        model_artefacts = read_local_artefacts(tool_artefact_dir, model_artefacts_dict, stop_event)
-
-    else:
-        print(f"Reading models for `{tool_name}` from local drive...")
-
-        # Load previously cached artefacts.
-        model_artefacts = read_local_artefacts(tool_artefact_dir, model_artefacts_dict, stop_event)
-
-    return model_artefacts
-
-class ModelsLoader:
-    """
-    Dynamically discover and load model artefacts for selected recommender tools.
-
-    Attributes:
-    - model_artefacts:
-        Dictionary where keys are tool names and values are tuples containing
-        the loaded model artefacts in the order defined by each tool's
-        MODEL_ARTEFACTS configuration.
-    """
-
-    def __init__(
-        self,
-        tools: list[str] | None = None,
-        stop_event: Event | None = None,
-    ) -> None:
-        """
-        Initialise the model loader and load artefacts for selected tools.
-
-        Args:
-        - tools (list[str] | None): List of tool names to load. If None, all configured tools with
-                                    a valid tool_config.py file will be loaded.
-
-        Raises:
-        - FileNotFoundError: If a selected configuration or required model is missing.
-        - ImportError: If a configuration cannot be imported.
-        - Exception: Download/deserialization failures propagate.
-        """
-        self.model_artefacts = {}
-
-        # If no tools specified, load all available tools
-        selected_tools = tools if tools is not None else TOOLS
-
-        for tool in selected_tools:
-            tool_config_path = REPO_ROOT / "src" / tool / "tool_config.py"
-
-            if not tool_config_path.is_file():
-                raise FileNotFoundError(
-                    f"No tool_config.py found for tool '{tool}'"
-                )
-
-            tool_config = importlib.import_module(
-                f"src.{tool}.tool_config"
-            )
-
-            self.model_artefacts[tool] = load_artefacts(
-                tool_config=tool_config, stop_event=stop_event,
-            )
-
-            print(f"\nArtefacts successfully loaded for `{tool}`!\n")
+from config.api_config import MODEL_ARTEFACT_DIR, MODEL_IDS, TOOLS
 
 
-def _require_valid(condition, message):
+def _require(condition, message):
     if not condition:
         raise ValueError(message)
 
 
-def validate_inference_models(loader):
-    """Validate trained artifacts and build bounded lookup maps once per model load."""
-    model, matrix, users, products = loader.model_artefacts["collaborative_filtering"]
-    _require_valid(isspmatrix_csr(matrix) and min(matrix.shape) > 0, "Invalid CF interaction matrix")
-    _require_valid(np.isfinite(matrix.data).all() and (matrix.data >= 0).all(), "Invalid CF weights")
-    for mapping, count in ((users, matrix.shape[0]), (products, matrix.shape[1])):
-        _require_valid(set(mapping) == set(range(count)), "CF mapping/matrix mismatch")
-        _require_valid(all(isinstance(value, str) and value for value in mapping.values()), "Invalid CF IDs")
-        _require_valid(len(set(mapping.values())) == count, "Duplicate CF IDs")
-    uf, itf = model.user_factors, model.item_factors
-    _require_valid(uf.ndim == itf.ndim == 2 and uf.shape[0] == matrix.shape[0]
-            and itf.shape[0] == matrix.shape[1] and uf.shape[1] == itf.shape[1] > 0,
-            "ALS factors/matrix mismatch")
-    _require_valid(np.isfinite(uf).all() and np.isfinite(itf).all(), "Invalid ALS factors")
-    _require_valid(callable(getattr(model, "recommend", None)), "Invalid collaborative model")
+def validate_model(bundle: dict, algorithm: str | None = None) -> dict:
+    """Reject incomplete or misaligned bundles before saving or serving."""
+    _require(isinstance(bundle, dict), "Model bundle must be a dictionary")
+    if "model" in bundle:
+        _require(algorithm in (None, "collaborative_filtering"), "Wrong algorithm bundle")
+        _require({"model", "interactions", "user_ids", "item_ids"} <= bundle.keys(), "Incomplete CF bundle")
+        model, matrix = bundle["model"], bundle["interactions"]
+        _require(isspmatrix_csr(matrix) and min(matrix.shape) > 0, "Invalid CF interaction matrix")
+        _require(np.isfinite(matrix.data).all(), "Invalid CF weights")
+        for ids, count in ((bundle["user_ids"], matrix.shape[0]), (bundle["item_ids"], matrix.shape[1])):
+            _require(isinstance(ids, list) and len(ids) == count, "CF IDs/matrix mismatch")
+            _require(all(isinstance(value, str) and bool(value.strip()) for value in ids)
+                     and len(set(ids)) == count, "Invalid or duplicate CF IDs")
+        users, items = model.user_factors, model.item_factors
+        _require(users.ndim == items.ndim == 2 and users.shape[0] == matrix.shape[0]
+                 and items.shape[0] == matrix.shape[1] and users.shape[1] == items.shape[1] > 0,
+                 "ALS factors/matrix mismatch")
+        _require(np.isfinite(users).all() and np.isfinite(items).all(), "Invalid ALS factors")
+        _require(callable(getattr(model, "recommend", None)), "Invalid ALS model")
+    else:
+        _require(algorithm in (None, "content_based_filtering"), "Wrong algorithm bundle")
+        _require({"item_matrix", "metadata"} <= bundle.keys(), "Incomplete content bundle")
+        matrix, meta = bundle["item_matrix"], bundle["metadata"]
+        _require({"parent_asin", "item_title", "main_category", "is_free"} <= set(meta.columns),
+                 "Invalid content metadata schema")
+        _require(not meta.empty and meta.parent_asin.is_unique and meta.parent_asin.map(
+            lambda value: isinstance(value, str) and bool(value.strip())
+        ).all(), "Invalid content product IDs")
+        _require(meta.is_free.map(lambda value: isinstance(value, (bool, np.bool_))).all(),
+                 "Invalid content free flags")
+        _require(isspmatrix_csr(matrix) and matrix.shape[0] == len(meta) and matrix.shape[1] > 0,
+                 "Content matrix/metadata mismatch")
+        _require(np.isfinite(matrix.data).all() and (matrix.data >= 0).all(), "Invalid content weights")
+    return bundle
 
-    vectorizer, features, meta = loader.model_artefacts["content_based_filtering"]
-    _require_valid({"parent_asin", "item_title", "main_category", "is_free"} <= set(meta.columns),
-            "Invalid content metadata schema")
-    _require_valid(not meta.empty and meta.parent_asin.is_unique
-            and meta.parent_asin.map(lambda value: isinstance(value, str) and bool(value)).all(),
-            "Invalid content product IDs")
-    _require_valid(isspmatrix_csr(features) and features.shape == (len(meta), len(vectorizer.vocabulary_))
-            and features.shape[1] > 0 and len(vectorizer.idf_) == features.shape[1],
-            "TF-IDF matrix/vocabulary/metadata mismatch")
-    _require_valid(set(vectorizer.vocabulary_.values()) == set(range(features.shape[1])), "Invalid vocabulary indices")
-    _require_valid(np.isfinite(features.data).all() and (features.data >= 0).all()
-            and np.isfinite(vectorizer.idf_).all(), "Invalid TF-IDF weights")
-    # These maps share the existing ID strings and stay fixed with this model set.
-    # Request histories and live product details are never cached here.
-    loader.user_index = {user_id: idx for idx, user_id in users.items()}
-    loader.content_indexes = (
-        {asin: idx for idx, asin in enumerate(meta["parent_asin"])},
-        dict(enumerate(meta["parent_asin"])),
-    )
+
+def save_model(bundle: dict, path: str | Path) -> None:
+    """Validate and atomically replace one local bundle; never upload it."""
+    validate_model(bundle)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile(dir=path.parent, suffix=".joblib", delete=False) as stream:
+        temporary = Path(stream.name)
+    try:
+        joblib.dump(bundle, temporary, compress=3)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def load_model(path: str | Path) -> dict:
+    """Load a trusted local bundle and validate its internal alignment."""
+    return validate_model(joblib.load(Path(path)))
+
+
+class ModelsLoader:
+    """Load configured bundles locally, downloading missing bundles on demand."""
+
+    def __init__(self, tools: list[str] | None = None, stop_event: Event | None = None) -> None:
+        self.model_artefacts = {}
+        for tool in TOOLS if tools is None else tools:
+            if tool not in TOOLS:
+                raise ValueError(f"Unknown recommendation tool: {tool}")
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError("Model loading stopped")
+            settings = importlib.import_module(f"src.{tool}.tool_config")
+            path = MODEL_ARTEFACT_DIR / tool / settings.MODEL_FILENAME
+            if not path.is_file():
+                from utils.supabase_utils import download_model_from_supabase
+                download_model_from_supabase(tool, MODEL_IDS[tool], settings.MODEL_FILENAME, stop_event)
+            bundle = load_model(path)
+            self.model_artefacts[tool] = validate_model(bundle, tool)
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError("Model loading stopped")
+
+
+def validate_inference_models(loader):
+    """Validate the two serving bundles and build lookup maps once per load."""
+    cf = validate_model(loader.model_artefacts["collaborative_filtering"], "collaborative_filtering")
+    cb = validate_model(loader.model_artefacts["content_based_filtering"], "content_based_filtering")
+    loader.user_index = {value: i for i, value in enumerate(cf["user_ids"])}
+    products = cb["metadata"].parent_asin.tolist()
+    loader.content_indexes = ({value: i for i, value in enumerate(products)}, dict(enumerate(products)))
     return loader

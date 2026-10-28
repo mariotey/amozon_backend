@@ -1,445 +1,254 @@
-"""
-Feature engineering pipeline for recommender system datasets.
+"""Pure in-memory feature preparation for the Supabase publication notebook.
 
-This module loads raw user review and item metadata datasets, performs data cleaning, feature
-extraction, aggregation, and transformation, and exports processed datasets for downstream
-recommender system models.
-
-Offline flow: input Parquet files -> cleaned reviews -> user/item aggregates
--> three prepared output files. Recency is relative to the latest dataset date,
-not today. Unknown prices use -1; quality_score uses a Wilson lower bound.
-The pipeline runs on import and writes local files.
+Import and transformation perform no local reads/writes or remote operations.
 """
-from typing import Any
-import os
-import numpy as np
-import pandas as pd
 import ast
 import json
-from config import (
-    DATA_INPUT_DIR, DATA_OUTPUT_DIR,
-    USER_REVIEW_FILENAME, ITEM_METADATA_FILENAME,
-    USER_ITEM_INTERACT_FILENAME, USER_FILENAME, ITEM_FILENAME
-)
+from statistics import NormalDist
+from typing import Any
 
-def safe_len(
-    x: Any
-) -> int:
-    """
-    Return the number of unique elements in a list-like object.
+import numpy as np
+import pandas as pd
 
-    If the input is a list or NumPy array, duplicate elements are removed before counting. All
-    other input types return ``0``.
 
-    Args:
-    - x (Any): Object to compute the length of
 
-    Returns:
-    - int: Number of unique elements if the input is a list or NumPy array, otherwise ``0``
-    """
-    if isinstance(x, (list, np.ndarray)):
-        # Drop duplicated elements in the list
-        return len(set(x))
+RECENCY_HALF_LIFE_DAYS = 365.25
+
+
+def _missing(value: Any) -> bool:
+    if isinstance(value, (dict, list, tuple, np.ndarray)):
+        return False
+    missing = pd.isna(value)
+    return isinstance(missing, (bool, np.bool_)) and bool(missing)
+
+
+def safe_len(value: Any) -> int:
+    """Count distinct nonmissing entries in list-like values."""
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return len({safe_json_numpy(entry) for entry in value if not _missing(entry)})
     return 0
 
-def safe_join(
-    x: Any
-) -> str:
-    """
-    Convert a value into a comma-separated string.
 
-    Lists and NumPy arrays are joined into a comma-separated string after excluding ``None``
-    values. Empty collections return an empty string. Scalar values are converted to strings,
-    while missing values return an empty string.
+def safe_join(value: Any) -> str:
+    """Flatten text collections, accepting prepared strings and NumPy values."""
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return ",".join(part for entry in value if (part := safe_join(entry)))
+    if isinstance(value, dict):
+        return safe_json_numpy(value)
+    return "" if _missing(value) else str(value)
 
-    Args:
-    - x (Any): Value to convert into a string
 
-    Returns:
-    - str: Comma-separated string representation of the input
-    """
-    if isinstance(x, (list, np.ndarray)):
-        if len(x) == 0:
-            return ''
-        return ','.join([str(i) for i in x if i is not None])
-    return '' if pd.isna(x) else str(x)
+def _json_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _json_value(entry) for key, entry in value.items()}
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return [_json_value(entry) for entry in value]
+    if isinstance(value, np.generic):
+        return _json_value(value.item())
+    return None if _missing(value) else value
 
-def safe_json_numpy(
-    x: Any
-) -> str:
-    """Serialize NumPy-compatible objects into a JSON string.
 
-    Dictionaries containing NumPy arrays, NumPy arrays, and Python lists are converted into JSON
-    strings. Missing values return an empty string, while other objects are converted into ``str``.
+def safe_json_numpy(value: Any) -> str:
+    """Serialize nested collection metadata; preserve already serialized text."""
+    if isinstance(value, (dict, list, tuple, np.ndarray)):
+        return json.dumps(_json_value(value), sort_keys=True)
+    return "" if _missing(value) else str(value)
 
-    Args:
-    - x (Any): Object to serialize
 
-    Returns:
-    - str: JSON string representation of the input, or its string representation for unsupported
-           types
-    """
-    if isinstance(x, dict):
-        return json.dumps({k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in x.items()})
-    elif isinstance(x, np.ndarray):
-        return json.dumps(x.tolist())
-    elif isinstance(x, (list)):
-        return json.dumps(x)
-    return '' if pd.isna(x) else str(x)
-
-def count_review_images(
-    image_list: Any
-) -> int | float:
-    """
-    Count the number of review images.
-
-    Supports lists of image references and string representations of Python lists. Missing values
-    return ``np.nan``. If the input cannot be parsed, ``0`` is returned.
-
-    Args:
-    - image_list (Any): Collection or string representation of review images
-
-    Returns:
-    - int | float: Number of images if determinable, ``np.nan`` for missing values, or ``0`` if
-                   parsing fails
-    """
-    if isinstance(image_list, list):
-        return len(image_list)
-    elif pd.isna(image_list):
-        return np.nan
-    else:
-        # If it"s not a list (maybe a string or other type), try to convert
+def count_review_images(value: Any) -> int:
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return len(value)
+    if isinstance(value, str):
         try:
-            if isinstance(image_list, str):
-                parsed = ast.literal_eval(image_list)
-                return len(parsed) if isinstance(parsed, list) else 1
-            else:
-                return 1
-        except:
-            return 0
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            try:
+                parsed = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                return 0
+        return len(parsed) if isinstance(parsed, (list, tuple)) else 0
+    return 0
 
-def wilson_lower_bound(
-    pos: int | float,
-    n: int,
-    confidence: float = 0.95
-) -> float:
-    """
-    Compute the Wilson lower confidence bound for a proportion.
 
-    The Wilson lower bound provides a conservative estimate of the true proportion of positive
-    observations and is commonly used to rank items based on both their rating and the number of
-    observations.
-
-    Args:
-    - pos (int | float): Number of positive observations
-    - n (int): Total number of observations
-    - confidence (float): Confidence level of the interval. Defaults to 0.95
-
-    Returns:
-    - float: Wilson lower confidence bound. Returns 0 if there are no observations
-    """
+def wilson_lower_bound(pos: int | float, n: int, confidence: float = .95) -> float:
+    """Conservative positive-review proportion; zero when no reviews exist."""
+    if not 0 < confidence < 1:
+        raise ValueError("confidence must be between 0 and 1")
     if n == 0:
+        return 0.
+    if not 0 <= pos <= n:
+        raise ValueError("positive count must be between zero and n")
+    z = NormalDist().inv_cdf((1 + confidence) / 2)
+    proportion = pos / n
+    return float((proportion + z*z/(2*n) - z * np.sqrt(
+        (proportion * (1-proportion) + z*z/(4*n)) / n
+    )) / (1+z*z/n))
+
+
+def _require_columns(frame: pd.DataFrame, columns: set[str], name: str) -> None:
+    missing = columns - set(frame.columns)
+    if missing:
+        raise ValueError(f"{name} is missing columns: {sorted(missing)}")
+
+
+def _utc_dates(values) -> pd.Series:
+    dates = pd.to_datetime(values, utc=True, format="mixed", errors="coerce")
+    if dates.isna().any():
+        raise ValueError("review_date contains missing or invalid timestamps")
+    return dates
+
+
+def _reference_time(dates: pd.Series, as_of) -> pd.Timestamp:
+    reference = dates.max() if as_of is None else pd.to_datetime(as_of, utc=True)
+    if pd.isna(reference):
+        raise ValueError("as_of must be a valid timestamp")
+    if (dates > reference).any():
+        raise ValueError("Reviews after as_of must be excluded before preparation")
+    return reference
+
+
+def _count_media(value: Any, field: str) -> int:
+    if not isinstance(value, dict):
         return 0
-    z = 1.96  # 95% confidence
-    phat = pos / n
-    return (phat + z*z/(2*n) - z * np.sqrt((phat*(1-phat)+z*z/(4*n))/n))/(1+z*z/n)
+    entries = value.get(field, [])
+    return sum(bool(entry) for entry in entries) if isinstance(entries, (list, tuple, np.ndarray)) else 0
 
-#################################################################################################
-# Import Data
-#################################################################################################
 
-review_df = pd.read_parquet(DATA_INPUT_DIR / USER_REVIEW_FILENAME)
-meta_df = pd.read_parquet(DATA_INPUT_DIR / ITEM_METADATA_FILENAME)
+def transform_data(
+    review_df: pd.DataFrame, meta_df: pd.DataFrame, *, as_of=None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Return review, user, item tables without I/O or input mutation.
 
-#################################################################################################
-# Reviews Table
-#################################################################################################
+    The default reference time is the latest supplied review, never wall-clock
+    time. Callers evaluating an earlier cutoff must supply only its past history.
+    Repeated user/product rows are retained for serving; model training applies
+    its explicit interaction policy separately.
+    """
+    _require_columns(review_df, {
+        "user_id", "parent_asin", "review_date", "review_rating", "review_text",
+        "review_title", "review_images", "helpful_vote", "verified_purchase",
+    }, "reviews")
+    _require_columns(meta_df, {
+        "parent_asin", "item_title", "main_category", "price", "categories",
+        "description", "features", "details", "item_images", "item_videos",
+    }, "metadata")
+    if review_df.empty:
+        raise ValueError("reviews must not be empty")
+    reviews = review_df.copy(deep=True)
+    metadata = meta_df.copy(deep=True)
+    for frame, fields in ((reviews, ("user_id", "parent_asin")), (metadata, ("parent_asin",))):
+        for field in fields:
+            if not frame[field].map(lambda v: isinstance(v, str) and bool(v.strip())).all():
+                raise ValueError(f"{field} must contain nonempty string IDs")
+    if metadata.parent_asin.duplicated().any():
+        raise ValueError("metadata parent_asin must be unique")
+    ratings = pd.to_numeric(reviews.review_rating, errors="coerce")
+    if not (np.isfinite(ratings).all() and ratings.between(1, 5).all()):
+        raise ValueError("review_rating must be finite and between 1 and 5")
+    reviews["review_rating"] = ratings
+    if "review_id" not in reviews:
+        reviews = reviews.reset_index(names="review_id")
+    ratings = reviews["review_rating"]
+    reviews["review_id"] = reviews["review_id"].astype(str)
+    if reviews.review_id.duplicated().any():
+        raise ValueError("review_id must be unique")
+    reviews["review_date"] = _utc_dates(reviews.review_date)
+    reference = _reference_time(reviews.review_date, as_of)
+    for field in ("review_text", "review_title"):
+        reviews[field] = reviews[field].astype("string").fillna("").str.replace("\x00", "", regex=False)
+    reviews["review_text_length"] = reviews.review_text.str.len()
+    reviews["review_title_length"] = reviews.review_title.str.len()
+    reviews["review_word_count"] = reviews.review_text.str.split().str.len()
+    reviews["is_extreme_rating"] = ratings.isin([1., 5.])
+    reviews["is_positive"] = ratings >= 4.
+    reviews["is_negative"] = ratings <= 2.
+    reviews["num_review_img"] = reviews.review_images.map(count_review_images)
+    reviews["review_images"] = reviews.review_images.map(safe_json_numpy)
+    age_days = (reference - reviews.review_date).dt.total_seconds() / 86400
+    reviews["days_since_review"] = np.floor(age_days).astype("int64")
+    reviews["review_year"] = reviews.review_date.dt.year
+    reviews["review_month"] = reviews.review_date.dt.month
+    # Exactly half the weight after one year, retaining fractional-day precision.
+    reviews["recency_weight"] = np.exp(-np.log(2) * age_days / RECENCY_HALF_LIFE_DAYS)
 
-# Add review_id as column (not index)
-modified_review_df = review_df.reset_index(names="review_id")
-modified_review_df["review_id"] = modified_review_df["review_id"].astype(str)
-modified_review_df["review_date"] = pd.to_datetime(modified_review_df["review_date"])
-
-# Extract text features
-modified_review_df["review_text"] = modified_review_df["review_text"].str.replace('\x00', '', regex=False)
-modified_review_df["review_text_length"] = modified_review_df["review_text"].str.len()
-modified_review_df["review_title_length"] = modified_review_df["review_title"].str.len()
-modified_review_df["review_word_count"] = modified_review_df["review_text"].str.split().str.len()
-
-# Sentiment proxy (simple heuristic)
-modified_review_df["is_extreme_rating"] = modified_review_df["review_rating"].isin([1.0, 5.0])
-modified_review_df["is_positive"] = modified_review_df["review_rating"] >= 4.0
-modified_review_df["is_negative"] = modified_review_df["review_rating"] <= 2.0
-
-# Image counts
-modified_review_df["num_review_img"] = modified_review_df["review_images"].apply(count_review_images)
-modified_review_df["review_images"] = modified_review_df["review_images"].apply(safe_join)
-
-# -------------------- TEMPORAL FEATURES --------------------
-# Calculate days since review (from most recent date in dataset)
-max_date = modified_review_df["review_date"].max()
-modified_review_df["days_since_review"] = (max_date - modified_review_df["review_date"]).dt.days
-modified_review_df["review_year"] = modified_review_df["review_date"].dt.year
-modified_review_df["review_month"] = modified_review_df["review_date"].dt.month
-modified_review_df["review_date"] = pd.to_datetime(
-    modified_review_df["review_date"]
-).dt.strftime("%Y-%m-%d")
-
-# Recency weight (exponential decay with 1-year half-life)
-modified_review_df["recency_weight"] = np.exp(-modified_review_df["days_since_review"] / 365.25)
-
-#################################################################################################
-# User Table
-#################################################################################################
-
-user_df = (
-    modified_review_df
-    .assign(
-        review_date = lambda x: pd.to_datetime(x["review_date"])
+    prices = pd.to_numeric(metadata.price, errors="coerce")
+    metadata["price"] = prices.where(np.isfinite(prices) & (prices >= 0))
+    users = (
+        reviews.merge(metadata[["parent_asin", "price"]], on="parent_asin", how="left", validate="many_to_one")
+        .assign(is_free=lambda f: f.price.eq(0))
+        .groupby("user_id", sort=True)
+        .agg({
+            "review_id": "count", "review_rating": ["mean", "std", "min", "max"],
+            "review_date": ["min", "max"], "recency_weight": "sum",
+            "helpful_vote": ["sum", "mean"], "verified_purchase": "sum",
+            "review_text_length": "mean", "review_word_count": "mean", "num_review_img": "sum",
+            "is_extreme_rating": "mean", "is_positive": "mean", "is_negative": "mean",
+            "price": "mean", "is_free": "mean",
+        }).reset_index()
     )
-    .merge(
-        meta_df[["parent_asin", "price"]],
-        how="left",
-        on="parent_asin"
-    )
-    .assign(
-        is_free = lambda row: row["price"] == 0.0
-    )
-    .groupby("user_id")
-    .agg({
-        # Basic stats
-        "review_id": "count",
-        "review_rating": ["mean", "std", "min", "max"],
-
-        # Temporal
-        "review_date": ["min", "max"],
-        "recency_weight": "sum",
-
-        # Quality signals
-        "helpful_vote": ["sum", "mean"],
-        "verified_purchase": "sum",
-
-        # Text engagement
-        "review_text_length": "mean",
-        "review_word_count": "mean",
-        "num_review_img": "sum",
-
-        # Rating patterns
-        "is_extreme_rating": "mean",
-        "is_positive": "mean",
-        "is_negative": "mean",
-
-        # Price sensitivity
-        "price": "mean",
-        "is_free": "mean"
+    users.columns = ["_".join(column).strip("_") for column in users.columns]
+    users = users.rename(columns={
+        "review_id_count": "num_reviews", "review_rating_mean": "avg_rating_given",
+        "review_rating_std": "rating_std", "review_rating_min": "min_rating_given",
+        "review_rating_max": "max_rating_given", "review_date_min": "first_review_date",
+        "review_date_max": "last_review_date", "recency_weight_sum": "total_recency_weight",
+        "helpful_vote_sum": "total_helpful_votes_received", "helpful_vote_mean": "avg_helpful_votes_per_review",
+        "verified_purchase_sum": "num_verified_purchases", "review_text_length_mean": "avg_review_length",
+        "review_word_count_mean": "avg_review_words", "num_review_img_sum": "total_review_images",
+        "is_extreme_rating_mean": "extreme_rating_ratio", "is_positive_mean": "positive_rating_ratio",
+        "is_negative_mean": "negative_rating_ratio", "price_mean": "avg_price_purchased",
+        "is_free_mean": "free_app_ratio",
     })
-    .reset_index()
-)
+    users["days_active"] = (users.last_review_date - users.first_review_date).dt.days + 1
+    users["reviews_per_day"] = users.num_reviews / users.days_active
+    users["verified_purchase_ratio"] = users.num_verified_purchases / users.num_reviews
+    users["user_segment"] = pd.cut(users.num_reviews, [0, 1, 10, np.inf], labels=["one_time", "occasional", "power_user"])
+    users["rating_std"] = users.rating_std.fillna(0)
+    users["is_discriminating"] = users.rating_std > 1.
 
-# Flatten multi-level columns
-user_df.columns = ["_".join(col).strip("_") for col in user_df.columns]
-
-# Rename for clarity
-user_df = user_df.rename(columns={
-    "review_id_count": "num_reviews",
-    "review_rating_mean": "avg_rating_given",
-    "review_rating_std": "rating_std",
-    "review_rating_min": "min_rating_given",
-    "review_rating_max": "max_rating_given",
-    "review_date_min": "first_review_date",
-    "review_date_max": "last_review_date",
-    "recency_weight_sum": "total_recency_weight",
-    "helpful_vote_sum": "total_helpful_votes_received",
-    "helpful_vote_mean": "avg_helpful_votes_per_review",
-    "verified_purchase_sum": "num_verified_purchases",
-    "review_text_length_mean": "avg_review_length",
-    "review_word_count_mean": "avg_review_words",
-    "num_review_images_sum": "total_review_images",
-    "is_extreme_rating_mean": "extreme_rating_ratio",
-    "is_positive_mean": "positive_rating_ratio",
-    "is_negative_mean": "negative_rating_ratio",
-    "price_mean": "avg_price_purchased",
-    "is_free_mean": "free_app_ratio"
-})
-
-# Derive additional features
-user_df["days_active"] = (
-    user_df["last_review_date"] - user_df["first_review_date"]
-).dt.days + 1
-
-user_df["reviews_per_day"] = (
-    user_df["num_reviews"] / user_df["days_active"]
-)
-
-user_df["verified_purchase_ratio"] = (
-    user_df["num_verified_purchases"] / user_df["num_reviews"]
-)
-
-# User segmentation (from EDA)
-user_df["user_segment"] = pd.cut(
-    user_df["num_reviews"],
-    bins=[0, 1, 10, np.inf],
-    labels=["one_time", "occasional", "power_user"]
-)
-
-# Rating discriminativeness (higher std = more discriminating)
-user_df["is_discriminating"] = user_df["rating_std"] > 1.0
-
-# Handle NaN values
-user_df["rating_std"] = user_df["rating_std"].fillna(0)
-user_df["avg_price_purchased"] = user_df["avg_price_purchased"].fillna(0)
-
-# print(f"Total users: {len(user_df)}")
-# print(f"User segments:\n{user_df['user_segment'].value_counts()}")
-
-user_df["first_review_date"] = pd.to_datetime(
-    user_df["first_review_date"]
-).dt.strftime("%Y-%m-%d")
-
-user_df["last_review_date"] = pd.to_datetime(
-    user_df["last_review_date"]
-).dt.strftime("%Y-%m-%d")
-
-#################################################################################################
-# Items Table
-#################################################################################################
-
-target_item_ids = modified_review_df["parent_asin"].unique().tolist()
-item_df = meta_df[meta_df["parent_asin"].isin(target_item_ids)]
-
-item_df["num_item_img"] = item_df["item_images"].apply(
-    lambda d: (
-        sum(bool(x) for x in d.get("hi_res", [])) +
-        sum(bool(x) for x in d.get("large", [])) +
-        sum(bool(x) for x in d.get("thumb", []))
-    )
-)
-
-item_df["num_item_videos"] = item_df["item_videos"].apply(
-    lambda d: len(d.get("url", []))
-)
-
-# Handle price properly
-item_df["price"] = item_df["price"].fillna(-1)  # -1 indicates unknown
-item_df["is_free"] = item_df["price"] == 0.0
-item_df["has_price_info"] = item_df["price"] >= 0
-item_df["price_bucket"] = pd.cut(
-    item_df["price"],
-    bins=[-1, 0, 1, 10, 25, 50, 100, float("inf")],
-    labels=["unknown", "0-1", "1-10", "10-25", "25-50", "50-100", "100+"]
-)
-
-item_df["num_categories"] = item_df["categories"].apply(safe_len)
-
-item_df["categories"] = item_df["categories"].apply(safe_join)
-
-item_df["description"] = item_df["description"].apply(safe_join)
-item_df["features"] = item_df["features"].apply(safe_join)
-item_df["details"] = item_df["details"].apply(safe_join)
-
-item_df["item_images"] = item_df["item_images"].apply(safe_json_numpy)
-item_df["item_videos"] = item_df["item_videos"].apply(safe_json_numpy)
-
-item_popularity_df = (
-    modified_review_df
-    .groupby("parent_asin")
-    .agg({
-        # Basic stats
-        "user_id": "count",
-        "review_rating": ["mean", "std", "min", "max"],
-
-        # Temporal
-        "review_date": ["min", "max"],
-        "recency_weight": "sum",
-
-        # Quality signals
-        "helpful_vote": ["sum", "mean"],
-        "verified_purchase": "sum",
-
-        # Rating patterns
-        "is_positive": "mean",
-        "is_negative": "mean",
+    items = metadata[metadata.parent_asin.isin(reviews.parent_asin)].copy()
+    if items.empty:
+        raise ValueError("No reviewed products have matching metadata")
+    items["num_item_img"] = items.item_images.map(lambda value: sum(_count_media(value, field) for field in ("hi_res", "large", "thumb")))
+    items["num_item_videos"] = items.item_videos.map(lambda value: _count_media(value, "url"))
+    items["has_price_info"] = items.price.notna()
+    items["is_free"] = items.price.eq(0)
+    items["price_bucket"] = pd.cut(
+        items.price, [0, 1, 10, 25, 50, 100, np.inf], labels=["0-1", "1-10", "10-25", "25-50", "50-100", "100+"],
+    ).astype("string").fillna("unknown")
+    items.loc[items.is_free, "price_bucket"] = "free"
+    items["price"] = items.price.fillna(-1)
+    items["num_categories"] = items.categories.map(safe_len)
+    for field in ("categories", "description", "features"):
+        items[field] = items[field].map(safe_join)
+    for field in ("details", "item_images", "item_videos"):
+        items[field] = items[field].map(safe_json_numpy)
+    popularity = reviews.groupby("parent_asin", sort=True).agg({
+        "user_id": "count", "review_rating": ["mean", "std", "min", "max"],
+        "review_date": ["min", "max"], "recency_weight": "sum",
+        "helpful_vote": ["sum", "mean"], "verified_purchase": "sum",
+        "is_positive": "mean", "is_negative": "mean",
+    }).reset_index()
+    popularity.columns = ["_".join(column).strip("_") for column in popularity.columns]
+    popularity = popularity.rename(columns={
+        "user_id_count": "num_reviews", "review_rating_mean": "avg_rating", "review_rating_std": "rating_std",
+        "review_rating_min": "min_rating", "review_rating_max": "max_rating", "review_date_min": "first_review_date",
+        "review_date_max": "last_review_date", "recency_weight_sum": "total_recency_weight",
+        "helpful_vote_sum": "total_helpful_votes", "helpful_vote_mean": "avg_helpful_votes",
+        "verified_purchase_sum": "num_verified_reviews", "is_positive_mean": "positive_review_ratio",
+        "is_negative_mean": "negative_review_ratio",
     })
-    .reset_index()
-)
-
-# Flatten columns
-item_popularity_df.columns = ["_".join(col).strip("_") for col in item_popularity_df.columns]
-
-# Rename
-item_popularity_df = item_popularity_df.rename(columns={
-    "user_id_count": "num_reviews",
-    "review_rating_mean": "avg_rating",
-    "review_rating_std": "rating_std",
-    "review_rating_min": "min_rating",
-    "review_rating_max": "max_rating",
-    "review_date_min": "first_review_date",
-    "review_date_max": "last_review_date",
-    "recency_weight_sum": "total_recency_weight",
-    "helpful_vote_sum": "total_helpful_votes",
-    "helpful_vote_mean": "avg_helpful_votes",
-    "helpful_vote_max": "max_helpful_votes",
-    "verified_purchase_sum": "num_verified_reviews",
-    "is_positive_mean": "positive_review_ratio",
-    "is_negative_mean": "negative_review_ratio"
-})
-
-item_df = item_df.merge(
-    item_popularity_df,
-    how="left",
-    on="parent_asin"
-)
-
-# Derive features
-item_df["last_review_date"] = pd.to_datetime(item_df["last_review_date"])
-item_df["first_review_date"] = pd.to_datetime(item_df["first_review_date"])
-
-item_df["days_on_platform"] = (
-    item_df["last_review_date"] - item_df["first_review_date"]
-).dt.days + 1
-
-item_df["reviews_per_day"] = (
-    item_df["num_reviews"] / item_df["days_on_platform"]
-)
-
-item_df["verified_review_ratio"] = (
-    item_df["num_verified_reviews"] / item_df["num_reviews"]
-)
-
-# Item popularity segment (from EDA)
-item_df["popularity_segment"] = pd.cut(
-    item_df["num_reviews"],
-    bins=[0, 1, 10, 100, np.inf],
-    labels=["cold_start", "low_coverage", "medium", "popular"]
-)
-
-# Quality score (Wilson lower bound for rating confidence)
-item_df["quality_score"] = item_df.apply(
-    lambda row: wilson_lower_bound(
-        row["positive_review_ratio"] * row["num_reviews"],
-        row["num_reviews"]
-    ),
-    axis=1
-)
-
-# print(f"Total items: {len(item_df)}")
-# print(f"Popularity segments:\n{item_df['popularity_segment'].value_counts()}")
-
-item_df["first_review_date"] = pd.to_datetime(
-    item_df["first_review_date"]
-).dt.strftime("%Y-%m-%d")
-
-item_df["last_review_date"] = pd.to_datetime(
-    item_df["last_review_date"]
-).dt.strftime("%Y-%m-%d")
-
-#################################################################################################
-# Export Data
-#################################################################################################
-
-# Create output directory if it doesn't exist
-os.makedirs(DATA_OUTPUT_DIR, exist_ok=True)
-
-modified_review_df.to_parquet(DATA_OUTPUT_DIR / USER_ITEM_INTERACT_FILENAME, index=False)
-user_df.to_parquet(DATA_OUTPUT_DIR / USER_FILENAME, index=False)
-item_df.to_parquet(DATA_OUTPUT_DIR / ITEM_FILENAME, index=False)
+    items = items.merge(popularity, on="parent_asin", how="left", validate="one_to_one")
+    items["days_on_platform"] = (items.last_review_date - items.first_review_date).dt.days + 1
+    items["reviews_per_day"] = items.num_reviews / items.days_on_platform
+    items["verified_review_ratio"] = items.num_verified_reviews / items.num_reviews
+    items["popularity_segment"] = pd.cut(items.num_reviews, [0, 1, 10, 100, np.inf], labels=["cold_start", "low_coverage", "medium", "popular"])
+    items["quality_score"] = items.apply(lambda row: wilson_lower_bound(row.positive_review_ratio * row.num_reviews, row.num_reviews), axis=1)
+    for frame in (users, items):
+        for field in ("first_review_date", "last_review_date"):
+            frame[field] = frame[field].dt.strftime("%Y-%m-%d")
+    reviews["review_date"] = reviews.review_date.dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    reviews = reviews.sort_values(["review_date", "review_id"], kind="stable").reset_index(drop=True)
+    items = items.sort_values("parent_asin", kind="stable").reset_index(drop=True)
+    reviews.attrs["as_of"] = reference.isoformat()
+    return reviews, users, items

@@ -1,10 +1,4 @@
-"""
-Model artefact management utilities for recommender system pipelines.
+"""Explicit bundle persistence and application model loading."""
+from .models_loader import ModelsLoader, load_model, save_model, validate_model, validate_inference_models
 
-This package provides utilities for managing recommender system model artefacts, including loading
-cached artefacts, retrieving missing artefacts from supabase, and uploading generated artefacts
-into supabase storage.
-
-The package exposes model loading functionality through the package namespace.
-"""
-from .models_loader import *
+__all__ = ["ModelsLoader", "load_model", "save_model", "validate_model", "validate_inference_models"]

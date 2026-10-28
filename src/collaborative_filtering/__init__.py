@@ -1,1 +1,1 @@
-"""Collaborative filtering package for the Amozon software recommender."""
+"""Model fitting and recommendations; import modules explicitly."""

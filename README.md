@@ -1,81 +1,136 @@
 # Amozon Recommendation Backend
 
-Amozon helps shoppers discover relevant software by using past customer reviews
-and product information to suggest products. This repository contains the backend
-service that a separate frontend, such as the Django application, calls to display
-recommendations and catalogue information.
+A FastAPI backend for software discovery using collaborative filtering,
+content-based recommendations, and an unseen-popular-products fallback.
+Supabase supplies catalogue, review, shopper, and published-model data.
 
-## What it provides
+## Start here
 
-- Personalised product suggestions, with a reason for the recommendation approach used.
-- Popular products for general browsing.
-- Product details and customer reviews.
-- Shopper profiles and random shoppers for exploring the experience.
+Install Python 3.13, fork/clone the repository, and run from its root:
 
-## How recommendations work
+```powershell
+python setup.py
+```
 
-1. **Similar shopping patterns:** use a trained model of customer preferences when
-   the shopper is supported by that model.
-2. **Product interests:** otherwise, use the characteristics of products the
-   shopper previously rated positively.
-3. **No suitable result:** return no recommendations if neither approach produces
-   suggestions. Popular products remain a separate browsing option.
+On Windows, `py -3.13 setup.py` also works. On macOS/Linux, use
+`python3.13 setup.py` if needed. Setup installs `uv` through pip when missing,
+installs the dependencies in `uv.lock` into `.venv`, and registers the
+`Amozon Backend (.venv)` notebook kernel inside that environment. It creates:
 
-The selection follows fixed rules. It does not rely on a conversational AI to
-choose the recommendation approach.
+```text
+data/output/
+models/collaborative_filtering/
+models/content_based_filtering/
+.env                         # only when missing
+```
 
-## Scope and expectations
+Edit `.env` with your server-side Supabase credentials:
 
-The project uses the Software subset of the Amazon Reviews 2023 dataset. It
-supports product discovery; recommendation quality and business impact still
-require evaluation before making performance claims.
+```env
+SUPABASE_URL=https://YOUR-PROJECT.supabase.co
+SUPBASE_SECRET_KEY=YOUR_SERVER_SIDE_SECRET_KEY
+```
 
-Recommendations depend on prepared data and trained models. On-demand queries
-reflect prepared table updates, while trained model updates still require the
-existing publication/cache workflow. The service does not retrain automatically
-from new feedback. Some shoppers may receive fewer suggestions or none.
+Keep the existing spelling `SUPBASE_SECRET_KEY`. Setup preserves existing files,
+credentials, datasets, and models. It does not provision Supabase, download data
+or models, train, or publish. `python setup.py --skip-install` creates only the
+folders and missing `.env` template. Dependency installation requires internet;
+if `implicit` needs compiling, a C/C++ toolchain, CMake, and OpenBLAS development
+libraries may be needed (the Dockerfile supplies these for Linux).
 
-Supabase stores the prepared information and model files. The backend serves
-these to the frontend through an API and is configured for Docker deployment on
-Render.
+Start notebooks with:
 
-## On-demand serving
+```powershell
+uv run jupyter lab
+```
 
-The API does not download complete User, Item, or Review tables at startup or
-on the first request. Random shoppers are sampled in Supabase, popular products
-are ordered and limited there, and product/profile/review pages use targeted
-queries. Any valid shopper ID or direct product link works independently of the
-initial sample. The frontend can independently call `/api/v1/randomusers?n=5`
-and `/api/v1/popular_items?limit=5`, then request the selected shopper's
-recommendations. Automatic selection remains the frontend's responsibility;
-this change does not modify the frontend.
+Choose the `Amozon Backend (.venv)` kernel. In an IDE, select the repository's
+`.venv` interpreter. If pip installed uv outside your PATH, replace `uv` with
+`python -m uv` in the commands below.
 
-One background worker loads the trained engines, their complete saved matrices,
-ID mappings, and content metadata. Browsing works while models load; recommendation
-requests return 503 until both models are ready. Collaborative results use the
-saved interaction matrix without querying raw reviews. Content fallback retrieves
-only that shopper's complete paginated inference history. Candidate coverage,
-seen-item filtering, weighting, and ranking rules remain intact.
+The manual workflow is:
 
-Serving queries live in `utils/supabase_utils.py`, model validation and reusable
-ID indexes live in `models_loader/models_loader.py`, and `app.py` owns the single
-background initialization task. Lookup maps are prepared once per model set;
-database metadata queries do not hold the numeric inference lock.
+1. `notebook/publish_dataset.ipynb`: download and transform data in memory, then
+   intentionally replace all rows in Supabase User, Item, and Review. No raw or
+   transformed local files are exported; the final cell is the publishing action.
+2. `notebook/train_test_split_data.ipynb`: fetch Supabase data once and save
+   shared chronological splits plus item metadata in `data/output`.
+3. `notebook/cf_recommend.ipynb`: load CF data, fit candidates, inspect validation
+   results, select settings, then deliberately run the final-test and save cells.
+4. `notebook/cb_recommend.ipynb`: the same sequence for content-based filtering,
+   using its own supported population and item catalogue.
 
-`/health` reports liveness; `/ready` reports model readiness and identifies serving
-data as `on_demand`. No database connectivity is implied by either response.
-Missing database dependencies return 503 rather than empty recommendations.
-No persistent serving-data caches, retraining, packaged model releases, or automatic
-version refresh are introduced. Cold instances still incur Python imports,
-model-file downloads when missing, model deserialization, and Render provisioning.
-No deployed startup speedup has been measured.
+The preparation and recommendation examples are merged into these two algorithm
+notebooks. They are independent experiments, not a competition between models.
+Run cells in order and stop after validation until settings are selected. The
+final publishing cell in either notebook uploads to Supabase when executed. See
+[TRAINING.md](TRAINING.md) for inputs, metrics, and publishing instructions.
 
-Before using random shoppers, manually review/apply
-[`sql/001_on_demand_serving.sql`](sql/001_on_demand_serving.sql). It provides the
-random-sampling function, restricted execute permissions, and query indexes.
-No live database changes or deployment were performed by this implementation.
+## Where the code lives
 
-## Technical guide
+| Location | Purpose |
+| --- | --- |
+| `setup.py` | First-run dependency installation, notebook kernel, folders, and missing `.env` template. |
+| `data_loader/` | Download/transform helpers, explicit Supabase reads, chronological splitting, algorithm-specific data views. |
+| `src/collaborative_filtering/model.py` | Build the signed rating matrix and fit ALS in memory. |
+| `src/content_based_filtering/model.py` | Fit item-text TF-IDF and return precomputed representations. |
+| Each `recommender.py` | Recommendations and independent algorithm evaluation. |
+| Each `tool_config.py` | Algorithm defaults, identity, and bundle filename. |
+| `config/ml_config.py` | Dataset settings, split filenames, local data paths, and shared `REPO_ROOT`. |
+| `config/api_config.py` | Serving paths, shared Supabase names, and published `MODEL_IDS`. |
+| `src/metrics.py` | Shared Recall@K and NDCG@K calculations; populations remain algorithm-specific. |
+| `src/routing.py` | Calls the recommenders directly with loaded bundles; CF -> content -> popular fallback. |
+| `models_loader/` | Validate, save, load, and explicitly publish single-file model bundles. |
+| `utils/review_history.py` | Shared latest-review preference resolution. |
+| `utils/supabase_utils.py` | Manual source reads, targeted serving queries, and model download. |
+| `sql/001_on_demand_serving.sql` | Required manual setup for shopper sampling and query indexes. |
+| `tests/` | Three small regression modules for data, models/notebooks, and API behavior. |
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for setup, API endpoints, deployment, testing,
-and maintenance.
+The obsolete evaluation/training runners and unused inference/scripts/release
+folders are removed. Dataset preparation, experiments, and API serving have one
+active path each. No dataset versioning or training manifests are generated.
+
+## Serving artifacts
+
+Each algorithm saves one file:
+
+```text
+models/collaborative_filtering/model.joblib
+models/content_based_filtering/model.joblib
+```
+
+CF bundles contain the ALS model, signed interaction matrix, ordered user IDs,
+and ordered item IDs. Content bundles contain the item matrix and aligned
+metadata. The vectorizer is used during fitting but not persisted; adding new
+product text requires rebuilding the content bundle. Inverse lookup maps are
+constructed once at application model loading.
+
+Data and model files are not committed. For a clean fork, either prepare and save
+models through the notebooks or configure IDs for compatible published bundles
+in your own Supabase project. The API downloads missing model files using
+`config/api_config.py` `MODEL_IDS`; it does not select the latest registry row.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for publication and cache behavior.
+
+## Run the API
+
+After configuring Supabase tables, storage, SQL, and models as described in
+[DEPLOYMENT.md](DEPLOYMENT.md), run:
+
+```powershell
+uv run uvicorn app:app --reload
+```
+
+Open `/docs` for endpoints. `/health` is liveness; `/ready` is model readiness.
+Browsing uses targeted Supabase queries and works independently of model loading.
+CF uses saved factors/history; content fallback loads only the requested
+shopper's history. Model and database failures remain errors, not empty results.
+
+Run the offline regression suite with:
+
+```powershell
+uv run python -m unittest discover -s tests -v
+```
+
+The tests use temporary files and fake Supabase responses; they do not publish
+data or models. See [TRAINING.md](TRAINING.md) for the ML workflow and
+[DEPLOYMENT.md](DEPLOYMENT.md) for API deployment.

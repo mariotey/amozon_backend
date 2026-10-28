@@ -1,23 +1,21 @@
 """
 Utility helper functions for interfacing with Supabase functionalities.
 
-Import loads .env and creates the shared Supabase client/storage handle. Read
-helpers query tables or download artifacts; write helpers insert, upload, or
-reconcile registry/storage contents. Exceptions propagate. Reconciliation can
-delete stale registry records and orphan files and is not read-only.
+Import creates the shared Supabase client/storage handle. Table helpers support
+manual data preparation and targeted API queries. Bundle downloads validate
+before replacing local files. Database exceptions propagate.
 """
 from contextlib import contextmanager
 import logging
+import json
 import os
 from time import perf_counter
 import pandas as pd
-import uuid
 from threading import Event
 from supabase import create_client
 from dotenv import load_dotenv
 from tqdm.auto import tqdm
-from config import (
-    DATA_INPUT_DIR,
+from config.api_config import (
     ITEM_TABLE_NAME, REVIEW_TABLE_NAME, USER_TABLE_NAME,
     MODELREGISTRY_TABLE_NAME,
     MODEL_ARTEFACT_BUCKET,
@@ -34,39 +32,66 @@ SUPABASE_CLIENT = create_client(
 
 ARTEFACTS_STORAGE = SUPABASE_CLIENT.storage.from_(MODEL_ARTEFACT_BUCKET)
 
-def push_table_into_supabase(
-    dataframe: pd.DataFrame,
-    table_name: str,
-    batch_size: int = 800,
-    show_progress: bool = True,
-) -> None:
+def replace_data_in_supabase(
+    reviews: pd.DataFrame, users: pd.DataFrame, items: pd.DataFrame,
+    batch_size: int = 800, show_progress: bool = True,
+) -> dict[str, int]:
+    """Replace all rows in Review/User/Item while preserving their schemas.
+
+    Validate and JSON-serialize all incoming batches before deleting anything.
+    Delete child reviews first; insert parent users/items before new reviews.
+    Requests are not one transaction: failures propagate and a complete rerun
+    is required after correcting them. ModelRegistry and Storage are untouched.
     """
-    Upload a pandas DataFrame to a Supabase table in batches.
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
+        raise ValueError("batch_size must be a positive integer")
+    tables = (
+        (USER_TABLE_NAME, users, "user_id"),
+        (ITEM_TABLE_NAME, items, "parent_asin"),
+        (REVIEW_TABLE_NAME, reviews, "review_id"),
+    )
+    for name, frame, key in tables:
+        if frame.empty or not frame.columns.is_unique or key not in frame:
+            raise ValueError(f"{name} must be nonempty with unique columns and {key}")
+        if not frame[key].is_unique or not frame[key].map(
+            lambda value: isinstance(value, str) and bool(value.strip()) and value == value.strip()
+        ).all():
+            raise ValueError(f"{name}.{key} must contain unique nonempty trimmed string IDs")
+    if not {"user_id", "parent_asin"} <= set(reviews.columns):
+        raise ValueError("Review requires user_id and parent_asin")
+    if not reviews.user_id.isin(users.user_id).all() or not reviews.parent_asin.isin(items.parent_asin).all():
+        raise ValueError("Every review must have a matching User and Item")
 
-    Args:
-    - dataframe (pd.DataFrame): DataFrame containing records to upload
-    - table_name (str): Name of the destination Supabase table
-    - batch_size (int): Number of rows to upload per batch. Default set to 800.
-    - show_progress (bool): Boolean flag to state whether to display a progress bar. Default set
-                            to True.
-    """
-    records = dataframe.to_dict(orient="records")
+    def records(frame):
+        # Pandas converts nullable/category/numpy values and non-finite numbers
+        # to JSON-compatible scalars/nulls; retain microsecond timestamp precision.
+        return json.loads(frame.to_json(orient="records", date_format="iso", date_unit="us"))
 
-    iterator = range(0, len(records), batch_size)
-    if show_progress:
-        iterator = tqdm(iterator, desc=f"Uploading to `{table_name}`")
+    for _, frame, _ in tables:
+        for start in range(0, len(frame), batch_size):
+            records(frame.iloc[start:start + batch_size])
+    for name, _, key in (tables[2], tables[0], tables[1]):
+        # The explicit predicate covers even legacy rows whose IDs are null.
+        SUPABASE_CLIENT.table(name).delete(returning="minimal").or_(
+            f"{key}.is.null,{key}.not.is.null"
+        ).execute()
+    for name, frame, _ in tables:
+        batches = range(0, len(frame), batch_size)
+        if show_progress:
+            batches = tqdm(batches, desc=f"Replacing `{name}`", unit="batch")
+        for start in batches:
+            SUPABASE_CLIENT.table(name).insert(
+                records(frame.iloc[start:start + batch_size]), returning="minimal",
+            ).execute()
+    return {name: len(frame) for name, frame, _ in tables}
 
-    for start in iterator:
-        batch = records[start:start + batch_size]
-        SUPABASE_CLIENT.table(table_name).insert(batch).execute()
-
-    print(f"Successfully uploaded {len(records):,} records to `{table_name}`.")
 
 def extract_table_from_supabase(
     table_name: str,
     batch_size: int = 1000,
     show_progress: bool = True,
     columns: list[str] | None = None,
+    order_by: str | None = None,
 ) -> pd.DataFrame:
     """
     Extract all records from a Supabase table in batches and concatenated into a pandas DataFrame.
@@ -77,9 +102,14 @@ def extract_table_from_supabase(
     - show_progress (bool): Boolean flag to state whether to display a progress bar during data
                             extraction. Default set to True.
 
+    order_by should be a unique column for stable pagination. Avoid changing
+    the source tables during a manual extraction.
+
     Returns:
     - pd.DataFrame: DataFrame containing all records from the specified Supabase table
     """
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
     offset = 0
     all_rows = []
 
@@ -90,13 +120,14 @@ def extract_table_from_supabase(
     )
 
     while True:
-        res = (
+        query = (
             SUPABASE_CLIENT
             .table(table_name)
             .select(",".join(columns) if columns else "*")
-            .range(offset, offset + batch_size - 1)
-            .execute()
         )
+        if order_by is not None:
+            query = query.order(order_by)
+        res = query.range(offset, offset + batch_size - 1).execute()
 
         data = res.data
         if not data:
@@ -105,214 +136,47 @@ def extract_table_from_supabase(
         all_rows.extend(data)
 
         batch_len = len(data)
-        offset += batch_size
+        offset += batch_len
 
         pbar.update(batch_len)
 
     pbar.close()
 
-    return pd.DataFrame(all_rows)
+    return pd.DataFrame(all_rows, columns=columns) if columns is not None else pd.DataFrame(all_rows)
 
-def reconcile_registry(
-    tool_name: str
-) -> None:
-    """Synchronize the model registry with the Supabase storage bucket.
+def download_model_from_supabase(tool_name: str, model_id: str, filename: str,
+                                 stop_event: Event | None = None) -> None:
+    """Download exactly the configured bundle. Existing remote models are not rewritten."""
+    from pathlib import Path
+    from tempfile import NamedTemporaryFile
+    from models_loader import load_model, validate_model
 
-    Removes stale registry entries that no longer have corresponding model artefacts in storage,
-    and deletes orphaned storage directories that do not have corresponding registry entries.
-
-    Args:
-    - tool_name (str): Name of the recommender tool whose registry and storage should be
-                       reconciled
-    """
-    # Retrieve all registered model IDs.
-    response = (
-        SUPABASE_CLIENT.table(MODELREGISTRY_TABLE_NAME)
-        .select("model_id")
-        .eq("tool", tool_name)
-        .execute()
-    )
-
-    model_ids = {
-        row["model_id"]
-        for row in response.data
-    }
-
-    bucket_objects = ARTEFACTS_STORAGE.list(tool_name)
-
-    bucket_ids = {
-        obj["name"]
-        for obj in bucket_objects
-        if obj["metadata"] is None      # Directories only
-    }
-
-    # Registry rows without corresponding storage.
-    stale_registry_ids = model_ids - bucket_ids
-
-    for model_id in stale_registry_ids:
-        (
-            SUPABASE_CLIENT.table(MODELREGISTRY_TABLE_NAME)
-            .delete()
-            .eq("tool", tool_name)
-            .eq("model_id", model_id)
-            .execute()
-        )
-
-    # Storage directories without corresponding registry rows.
-    orphaned_storage_ids = bucket_ids - model_ids
-
-    for model_id in orphaned_storage_ids:
-        files = ARTEFACTS_STORAGE.list(f"{tool_name}/{model_id}")
-
-        ARTEFACTS_STORAGE.remove(
-            [
-                f"{tool_name}/{model_id}/{file['name']}"
-                for file in files
-            ]
-        )
-
-def push_artefacts_into_registry(
-    tool_name: str
-) -> tuple[str, str]:
-    """Create a new model registry entry for a set of model artefacts.
-
-    Reconciles the registry with storage before generating a new model ID and inserting a
-    corresponding registry record into the model registry table.
-
-    Args:
-    - tool_name (str): Name of the recommender tool that owns the model artefacts
-
-    Returns:
-    - tuple:
-        - str: Newly generated UUID identifying the model version
-        - str: Storage directory where the model artefacts should be uploaded
-    """
-    reconcile_registry(tool_name)
-
-    model_id = str(uuid.uuid4())
-    storage_path = f"{tool_name}/{model_id}"
-
-    (
-        SUPABASE_CLIENT.table(MODELREGISTRY_TABLE_NAME)
-        .insert(
-            {
-                "model_id": model_id,
-                "tool": tool_name,
-                "storage_path": storage_path,
-            }
-        )
-        .execute()
-    )
-
-    return model_id, storage_path
-
-def push_artefacts_into_supabase(
-    tool_dir: str,
-    model_artefacts_dict: dict[str, str],
-    storage_path: str
-) -> None:
-    """Upload model artefacts to Supabase Storage.
-
-    Uploads each model artefact from the local tool directory into the specified storage path in
-    the Supabase storage bucket.
-
-    Args:
-    - tool_dir (str): Local directory containing the model artefact files
-    - model_artefacts_dict (dict[str, str]): Mapping of artefact names to their filenames
-    - storage_path (str): Destination directory in the Supabase storage bucket
-    """
-    for filename in model_artefacts_dict.values():
-        filepath = tool_dir / filename
-
-        with open(filepath , "rb") as f:
-            ARTEFACTS_STORAGE.upload(
-                path=f"{storage_path}/{filename}",
-                file=f,
-                file_options={"upsert": "true"},
-            )
-
-def download_artefacts_from_supabase(
-    tool_name: str,
-    model_id: str,
-    model_artefacts_dict: dict[str, str],
-    stop_event: Event | None = None,
-) -> None:
-    """Download model artefacts from Supabase Storage.
-
-    Attempts to download the specified model version. If the requested model ID cannot be found,
-    falls back to downloading the latest available model version for the tool.
-
-    Args:
-    - tool_name (str): Name of the recommender tool whose artefacts should be downloaded
-    - model_id (str): Identifier of the model version to retrieve
-    - model_artefacts_dict (dict[str, str]): Mapping of artefact names to their filenames
-    """
     if stop_event is not None and stop_event.is_set():
         raise InterruptedError("Model loading stopped")
+    rows = (SUPABASE_CLIENT.table(MODELREGISTRY_TABLE_NAME).select("storage_path")
+            .eq("tool", tool_name).eq("model_id", model_id).limit(1).execute()).data
+    if not rows:
+        raise FileNotFoundError(f"No configured model bundle for {tool_name}: {model_id}")
+    content = ARTEFACTS_STORAGE.download(f"{rows[0]['storage_path']}/{filename}")
+    destination = MODEL_ARTEFACT_DIR / tool_name / filename
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile(dir=destination.parent, suffix=".joblib", delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(content)
     try:
-        print(f"Fetching `{model_id}` models for `{tool_name}` from supabase...\n")
-
-        response = (
-            SUPABASE_CLIENT.table(MODELREGISTRY_TABLE_NAME)
-            .select("storage_path")
-            .eq("tool", tool_name)
-            .eq("model_id", model_id)
-            .limit(1)
-            .execute()
-        )
-
-    except Exception as e:
-        if stop_event is not None and stop_event.is_set():
-            raise InterruptedError("Model loading stopped") from None
-        print(f"{model_id} models for `{tool_name}` cannot be loaded ({type(e).__name__})\n")
-        print(f"Fetching latest models for `{tool_name}` from supabase...\n")
-
-        response = (
-            SUPABASE_CLIENT.table(MODELREGISTRY_TABLE_NAME)
-            .select("storage_path")
-            .eq("tool", tool_name)
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-
-    if not response.data:
+        validate_model(load_model(temporary), tool_name)
         if stop_event is not None and stop_event.is_set():
             raise InterruptedError("Model loading stopped")
-        response = (
-            SUPABASE_CLIENT.table(MODELREGISTRY_TABLE_NAME)
-            .select("storage_path")
-            .eq("tool", tool_name)
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-    if not response.data:
-        raise FileNotFoundError(f"No model artefacts registered for {tool_name}")
-
-    storage_path = response.data[0]["storage_path"]
-
-    for filename in model_artefacts_dict.values():
-        if stop_event is not None and stop_event.is_set():
-            raise InterruptedError("Model loading stopped")
-        remote_path = f"{storage_path}/{filename}"
-        local_path = MODEL_ARTEFACT_DIR / tool_name / filename
-
-        print(f"Downloading \"{remote_path}\"...")
-
-        file_bytes = ARTEFACTS_STORAGE.download(remote_path)
-        if stop_event is not None and stop_event.is_set():
-            raise InterruptedError("Model loading stopped")
-
-        with open(local_path, "wb") as f:
-            f.write(file_bytes)
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 # Targeted API queries; bulk extraction above remains available to offline workflows.
 logger = logging.getLogger(__name__)
 CARD_FIELDS = ["parent_asin", "item_title", "main_category", "price", "is_free", "avg_rating", "num_reviews", "item_images"]
 DETAIL_FIELDS = CARD_FIELDS + ["store", "popularity_segment", "quality_score", "description"]
-HISTORY_FIELDS = ["user_id", "parent_asin", "review_rating", "recency_weight"]
+HISTORY_FIELDS = ["user_id", "parent_asin", "review_rating", "recency_weight", "review_date", "review_id"]
 PROFILE_FIELDS = (
     "user_id,num_reviews,avg_rating_given,min_rating_given,max_rating_given,"
     "first_review_date,last_review_date,days_active,user_segment,"
@@ -365,14 +229,35 @@ class ServingData:
             raise DependencyUnavailable("Duplicate shopper selection response")
         return [{"user_id": str(row["user_id"])} for row in rows]
 
-    def popular_items(self, limit):
+    def popular_items(self, limit, *, exclude_ids=()):
+        """Rank popular cards, paging bounded batches when excluding seen products.
+
+        Recommendation fallback supplies one shopper's seen IDs and scans only
+        as far as needed to fill the result or exhaust the catalog. A shopper
+        with no history needs no exclusions. No bulk table cache is built.
+        """
+        if not 1 <= limit <= 100:
+            raise ValueError("Popular-item limit must be between 1 and 100")
+        excluded = set(exclude_ids)
+
+        def ranked_query():
+            return (self.client.table(ITEM_TABLE_NAME).select(",".join(CARD_FIELDS))
+                    .order("num_reviews", desc=True, nullsfirst=False)
+                    .order("avg_rating", desc=True, nullsfirst=False)
+                    .order("parent_asin", nullsfirst=False))
+
         with timed("Popular products"):
-            return self._execute(
-                self.client.table(ITEM_TABLE_NAME).select(",".join(CARD_FIELDS))
-                .order("num_reviews", desc=True, nullsfirst=False)
-                .order("avg_rating", desc=True, nullsfirst=False)
-                .order("parent_asin", nullsfirst=False).limit(limit)
-            ).data
+            if not excluded:
+                return self._execute(ranked_query().limit(limit)).data
+            rows, offset = [], 0
+            while len(rows) < limit:
+                batch = self._execute(ranked_query().range(offset, offset + 99)).data
+                if not batch:
+                    break
+                rows.extend(row for row in batch if row["parent_asin"] not in excluded)
+                # A short page may be a server response cap, not the catalog end.
+                offset += len(batch)
+            return rows[:limit]
 
     def product(self, parent_asin, *, fields=DETAIL_FIELDS):
         rows = self._execute(
@@ -392,14 +277,20 @@ class ServingData:
 
     def reviews(self, parent_asin, page, page_size):
         start = (page - 1) * page_size
-        response = self._execute(
-            self.client.table(REVIEW_TABLE_NAME).select(REVIEW_FIELDS, count="exact")
-            .eq("parent_asin", parent_asin)
-            .order("review_date", desc=True, nullsfirst=False).order("review_id")
-            .range(start, start + page_size - 1)
-        )
-        total = response.count or 0
-        return {"items": response.data, "page": page, "page_size": page_size,
+        rows, total = [], 0
+        # Fill this page even when the server caps each response below page_size.
+        while len(rows) < page_size:
+            response = self._execute(
+                self.client.table(REVIEW_TABLE_NAME).select(REVIEW_FIELDS, count="exact")
+                .eq("parent_asin", parent_asin)
+                .order("review_date", desc=True, nullsfirst=False).order("review_id")
+                .range(start + len(rows), start + page_size - 1)
+            )
+            total = response.count or 0
+            rows.extend(response.data)
+            if not response.data or start + len(rows) >= total:
+                break
+        return {"items": rows, "page": page, "page_size": page_size,
                 "total_count": total, "page_count": (total + page_size - 1) // page_size}
 
     def user_history(self, user_id, page, page_size, *, verified_only=True):
@@ -458,7 +349,7 @@ class ServingData:
         with timed("Shopper history retrieval"):
             while True:
                 query = (self.client.table(REVIEW_TABLE_NAME)
-                         .select("review_id," + ",".join(HISTORY_FIELDS))
+                         .select("review_id," + ",".join(field for field in HISTORY_FIELDS if field != "review_id"))
                          .eq("user_id", user_id).order("review_id").limit(self.history_page_size))
                 if cursor is not None:
                     query = query.gt("review_id", cursor)

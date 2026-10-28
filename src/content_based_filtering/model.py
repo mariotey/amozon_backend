@@ -1,78 +1,101 @@
-"""
-TF-IDF model building, persistence, and loading for content-based filtering.
-"""
+"""Build reproducible TF-IDF artifacts from raw or prepared product text."""
 from typing import Any
 import logging
+
+import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
-from models_loader import save_local_artefacts
+
 from .tool_config import (
     TFIDF_MAX_FEATURES, TFIDF_NGRAM_RANGE, TFIDF_SUBLINEAR_TF,
-    MODEL_NAME,
-    MODEL_ARTEFACTS
 )
 
 logger = logging.getLogger(__name__)
 
-def build_item_text(
-    row: Any
-) -> str:
+_TEXT_FIELDS = ("item_title", "description", "features")
+_REQUIRED_COLUMNS = {"parent_asin", "main_category", "is_free", *_TEXT_FIELDS}
+
+
+def _text_parts(value: Any) -> list[str]:
+    """Flatten supported text containers without introducing missing-value tokens."""
+    if isinstance(value, str):
+        normalized = " ".join(value.split())
+        return [normalized] if normalized else []
+    if isinstance(value, np.ndarray):
+        # Iterating .flat also handles scalar and multidimensional arrays.
+        return [part for entry in value.flat for part in _text_parts(entry)]
+    if isinstance(value, (list, tuple)):
+        return [part for entry in value for part in _text_parts(entry)]
+    if value is None or (pd.api.types.is_scalar(value) and pd.isna(value)):
+        return []
+    if pd.api.types.is_scalar(value):
+        return [str(value)]
+    raise ValueError("Product text must be a scalar, list, tuple, or NumPy array")
+
+
+def build_item_text(row: Any) -> str:
+    """Join title, description, and features, including prepared plain strings.
+
+    Raw list/array fields and nested collections are flattened in their original
+    order. Missing scalars are omitted rather than becoming 'nan' or '<NA>'.
     """
-    Concatenate item title, description, and features into a single string.
+    return " ".join(part for field in _TEXT_FIELDS for part in _text_parts(row[field]))
 
-    Args:
-    - row (Any): A pandas Series representing one row of the metadata DataFrame.
 
-    Returns:
-    - str: Title plus description/features entries when those values are lists.
-      Plain-string description/features values are currently skipped.
+def prepare_training_data(item_df: pd.DataFrame) -> pd.DataFrame:
+    """Validate product identity/flags and return text in stable product-ID order.
+
+    Sorting makes matrix rows, saved metadata, and learned vocabulary independent
+    of the incoming DataFrame row order. Input frames are never modified.
     """
-    parts = [str(row["item_title"] or "")]
+    if not isinstance(item_df, pd.DataFrame):
+        raise ValueError("item_df must be a pandas DataFrame")
+    missing = _REQUIRED_COLUMNS - set(item_df.columns)
+    if missing:
+        raise ValueError(f"Missing content-training columns: {', '.join(sorted(missing))}")
+    if item_df.empty:
+        raise ValueError("Content training requires at least one product")
 
-    desc = row["description"]
-    feats = row["features"]
-
-    if isinstance(desc, list):
-        parts += [str(d) for d in desc if d]
-    if isinstance(feats, list):
-        parts += [str(f) for f in feats if f]
-
-    return " ".join(parts)
-
-def build_and_save(
-    item_df: pd.DataFrame
-) -> None:
-    """
-    Fit TF-IDF on the item corpus and persist all artifacts to disk.
-
-    Args:
-    - item_df (pd.DataFrame): parent_asin, item_title, description, features,
-      main_category, and is_free columns.
-
-    Saves the fitted vectorizer, sparse matrix, and row-aligned metadata in
-    MODEL_ARTEFACTS order. Resetting indices preserves matrix/metadata alignment.
-    Writes local files without uploading; unsuitable text may fail fitting.
-    """
-    item_meta_df = item_df.copy()
-    item_meta_df["text"] = item_meta_df.apply(build_item_text, axis=1)
-    item_meta_df = item_meta_df[
-        ["parent_asin", "item_title", "main_category", "text", "is_free"]
-    ].reset_index(drop=True)
-
-    logger.info("Fitting TF-IDF with max_features=%d", TFIDF_MAX_FEATURES)
-
-    tfidf = TfidfVectorizer(
-        max_features=TFIDF_MAX_FEATURES,
-        ngram_range=TFIDF_NGRAM_RANGE,
-        sublinear_tf=TFIDF_SUBLINEAR_TF,
+    ids = item_df["parent_asin"]
+    valid_ids = ids.map(
+        lambda value: isinstance(value, str) and bool(value.strip()) and value == value.strip()
     )
+    if not valid_ids.all():
+        raise ValueError("parent_asin must contain nonempty strings without surrounding whitespace")
+    if ids.duplicated().any():
+        raise ValueError("Content training requires unique parent_asin values")
+    if not item_df["is_free"].map(lambda value: isinstance(value, (bool, np.bool_))).all():
+        raise ValueError("is_free must contain boolean values without missing entries")
 
-    item_matrix = tfidf.fit_transform(item_meta_df["text"])
+    prepared = item_df[list(sorted(_REQUIRED_COLUMNS))].copy()
+    prepared = prepared.sort_values("parent_asin", kind="stable").reset_index(drop=True)
+    for field in (*_TEXT_FIELDS, "main_category"):
+        prepared[field] = prepared[field].map(lambda value: " ".join(_text_parts(value)))
+    prepared["is_free"] = prepared["is_free"].astype(bool)
+    prepared["text"] = prepared.apply(build_item_text, axis=1)
+    if not prepared["text"].str.strip().ne("").any():
+        raise ValueError("Content training requires a nonempty product-text corpus")
+    return prepared
 
-    artefacts = (
-        tfidf,
-        item_matrix,
-        item_meta_df.drop(columns=["text"])
+
+def fit(items: pd.DataFrame, *, max_features: int = TFIDF_MAX_FEATURES,
+        ngram_range: tuple[int, int] = TFIDF_NGRAM_RANGE,
+        sublinear_tf: bool = TFIDF_SUBLINEAR_TF) -> dict:
+    """Fit item text in memory; the vectorizer is not needed by current serving.
+
+    New text requires rebuilding this bundle. Matrix rows and metadata stay
+    aligned; float32 stores the item representations with less numeric memory.
+    """
+    prepared = prepare_training_data(items)
+    vectorizer = TfidfVectorizer(
+        max_features=max_features, ngram_range=ngram_range,
+        sublinear_tf=sublinear_tf, dtype=np.float32,
     )
-
-    save_local_artefacts(MODEL_NAME, artefacts, MODEL_ARTEFACTS)
+    try:
+        matrix = vectorizer.fit_transform(prepared["text"])
+    except ValueError as exc:
+        if "empty vocabulary" in str(exc):
+            raise ValueError("Product text contains no usable TF-IDF terms") from exc
+        raise
+    metadata = prepared[["parent_asin", "item_title", "main_category", "is_free"]].copy()
+    return {"item_matrix": matrix, "metadata": metadata}
