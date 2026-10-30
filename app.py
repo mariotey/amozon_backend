@@ -17,6 +17,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from config.api_config import DEMO_USERS
 from models_loader import ModelsLoader, validate_inference_models
 from src import routing
 from utils.supabase_utils import (
@@ -291,7 +292,12 @@ def user_details(user_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="User not found")
     return _serialize_items([response])[0]
 
-@app.get("/api/v1/randomusers")
-def random_users(n: int = Query(5, ge=1, le=100)) -> list[dict[str, Any]]:
-    """Sample distinct eligible shoppers inside Supabase, transferring at most n IDs."""
-    return serving_data.random_users(n)
+@app.get("/api/v1/demo_user")
+def demo_user() -> dict[str, str]:
+    """Three fixed shopper IDs: collaborative, content-based, and popular fallback.
+
+    Return configured examples without database queries or model inference, even
+    while models are loading. Each ID is verified for its scenario when published;
+    this endpoint does not override the recommendation router.
+    """
+    return DEMO_USERS.copy()

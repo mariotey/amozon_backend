@@ -25,8 +25,8 @@ from app import ModelResources
 
 
 class Query:
-    def __init__(self, db, table, params=None):
-        self.db, self.table, self.params = db, table, params
+    def __init__(self, db, table):
+        self.db, self.table = db, table
         self.fields, self.count = None, None
         self.filters, self.orders = [], []
         self.requested_limit, self.interval = None, None
@@ -64,10 +64,6 @@ class Query:
             self.db.calls.append(self)
         if self.table in self.db.fail:
             raise RuntimeError("private credential must not appear in responses")
-        if self.table == "rpc:random_shoppers":
-            ids = list(dict.fromkeys(row["user_id"] for row in self.db.tables["Review"] if row["user_id"] is not None))
-            # A deterministic fake, not an implementation of database randomness.
-            return SimpleNamespace(data=[{"user_id": uid} for uid in ids[:self.params["sample_size"]]], count=None)
         rows = list(self.db.tables[self.table])
         for operation, field, value in self.filters:
             if operation == "eq":
@@ -122,10 +118,6 @@ class Database:
 
     def table(self, name):
         return Query(self, name)
-
-    def rpc(self, name, params):
-        return Query(self, "rpc:" + name, params)
-
 
 def model_fixture(db):
     model = Mock()
@@ -188,6 +180,38 @@ class OnDemandTests(unittest.TestCase):
             time.sleep(.01)
         self.fail("Models did not reach expected readiness")
 
+    def test_demo_user_returns_three_fixed_unique_ids_without_dependencies(self):
+        self.db.fail.update(self.db.tables)
+        with self.client(ready=False) as client:
+            response = client.get("/api/v1/demo_user")
+            self.assertEqual(response.status_code, 200)
+            users = response.json()
+            self.assertEqual(set(users), {"collaborative", "content_based", "popular"})
+            self.assertEqual(len(set(users.values())), 3)
+            self.assertTrue(all(isinstance(user, str) and user.strip() == user and user
+                                for user in users.values()))
+            self.assertEqual(users, app.DEMO_USERS)
+            self.assertEqual(client.get("/api/v1/demo_user?n=100").json(), users)
+            self.assertEqual(client.get("/api/v1/randomusers").status_code, 404)
+            self.assertEqual(self.db.calls, [])
+            self.models.model_artefacts["collaborative_filtering"]["model"].recommend.assert_not_called()
+
+    def test_demo_ids_use_three_different_recommendation_routes(self):
+        users = app.DEMO_USERS
+        self.models.model_artefacts["collaborative_filtering"]["user_ids"] = [users["collaborative"]]
+        for row in self.db.tables["Review"]:
+            if row["user_id"] == "alpha":
+                row["user_id"] = users["content_based"]
+        self.db.tables["Review"].append(Database.review("5", users["popular"], "seen", 2.))
+        with self.client() as client:
+            for scenario, user_id in client.get("/api/v1/demo_user").json().items():
+                with self.subTest(scenario=scenario):
+                    response = client.get(f"/api/v1/users/{user_id}/recommendations?n=8")
+                    self.assertEqual(response.status_code, 200)
+                    result = response.json()
+                    self.assertEqual(result["engine_used"], scenario)
+                    self.assertTrue(result["items"])
+
     def test_all_existing_endpoint_payloads_and_validation(self):
         with self.client() as client:
             self.assertEqual(client.get("/health").json(), {"status": "ok"})
@@ -210,13 +234,11 @@ class OnDemandTests(unittest.TestCase):
             self.assertEqual(set(history), page_fields | {"user_id", "verified_only"})
             self.assertTrue(history["verified_only"])
             self.assertIsInstance(history["items"][0]["item"], dict)
-            shoppers = client.get("/api/v1/randomusers?n=2").json()
-            self.assertEqual(len(shoppers), 2)
-            self.assertTrue(all(set(row) == {"user_id"} for row in shoppers))
+            self.assertEqual(client.get("/api/v1/demo_user").json(), app.DEMO_USERS)
             for path in ("/api/v1/items/missing", "/api/v1/items/missing/reviews", "/api/v1/users/missing"):
                 with self.subTest(path=path):
                     self.assertEqual(client.get(path).status_code, 404)
-            for path in ("/api/v1/randomusers?n=0", "/api/v1/users/u/recommendations?n=101",
+            for path in ("/api/v1/users/u/recommendations?n=101",
                          "/api/v1/items/seen/reviews?page=0", "/api/v1/users/u/history?page_size=101",
                          "/api/v1/users/%20/recommendations"):
                 with self.subTest(path=path):
@@ -244,7 +266,7 @@ class OnDemandTests(unittest.TestCase):
             self.assertEqual(self.db.calls, [])
             self.assertEqual(client.get("/health").json(), {"status": "ok"})
             self.assertEqual(client.get("/ready").status_code, 503)
-            self.assertEqual(client.get("/api/v1/randomusers").status_code, 200)
+            self.assertEqual(client.get("/api/v1/demo_user").status_code, 200)
             self.assertEqual(client.get("/api/v1/items/c").status_code, 200)
             self.assertEqual(client.get("/api/v1/items/c/reviews").status_code, 200)
             self.assertEqual(client.get("/api/v1/users/u").status_code, 200)
@@ -335,8 +357,7 @@ class OnDemandTests(unittest.TestCase):
 
     def test_content_fallback_keeps_full_candidates_seen_exclusion_and_order(self):
         with self.client() as client:
-            # This shopper was never selected by randomusers and isn't in the ALS mapping.
-            client.get("/api/v1/randomusers?n=1")
+            # Any shopper outside the ALS mapping can still use the content model.
             response = client.get("/api/v1/users/alpha/recommendations?n=100")
             result = response.json()
             self.assertEqual(result["engine_used"], "content_based")
@@ -396,7 +417,7 @@ class OnDemandTests(unittest.TestCase):
             report = self.wait_ready(client, 503)
             self.assertEqual(report.json()["resources"]["models"], "error")
             self.assertEqual(client.get("/health").status_code, 200)
-            self.assertEqual(client.get("/api/v1/randomusers").status_code, 200)
+            self.assertEqual(client.get("/api/v1/demo_user").status_code, 200)
             self.assertEqual(client.get("/api/v1/items/a").status_code, 200)
             self.assertEqual(client.get("/api/v1/users/u/recommendations").status_code, 503)
 
@@ -409,7 +430,7 @@ class OnDemandTests(unittest.TestCase):
             validate_inference_models(broken)
         with self.client(ready=False) as client:
             self.assertEqual(set(client.get("/openapi.json").json()["paths"]), {
-                "/health", "/ready", "/api/v1/randomusers",
+                "/health", "/ready", "/api/v1/demo_user",
                 "/api/v1/users/{user_id}", "/api/v1/users/{user_id}/recommendations",
                 "/api/v1/users/{user_id}/history",
                 "/api/v1/items/{parent_asin}", "/api/v1/items/{parent_asin}/reviews",

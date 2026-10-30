@@ -25,8 +25,9 @@ and the ModelArtefacts storage bucket. Prepare schemas to match
 intentional full replacement of User/Item/Review; it does not export intermediate
 local files or alter model records. Run it outside serving use: batched deletion
 and insertion are not one transaction. Manually review/apply
-[sql/001_on_demand_serving.sql](sql/001_on_demand_serving.sql): the random_shoppers
-RPC is required by /api/v1/randomusers, and the indexes support scoped queries.
+[sql/001_serving_indexes.sql](sql/001_serving_indexes.sql): these indexes support
+the active history, product, profile, and popularity queries. Demo shopper IDs
+come from application configuration; no shopper-sampling RPC is required.
 This repository does not apply SQL or change database permissions automatically.
 
 ## Model bundles and publication
@@ -86,7 +87,7 @@ metadata queries. The API never loads experiment split files or entire tables.
 | `/ready` | Model readiness; does not guarantee database connectivity. |
 | `/docs`, `/redoc`, `/openapi.json` | API documentation/schema. |
 | `/api/v1/users/{user_id}/recommendations?n=10` | CF, then content, then unseen-popular fallback. |
-| `/api/v1/randomusers?n=5` | Random shoppers through the database RPC. |
+| `/api/v1/demo_user` | Exactly three fixed shopper IDs keyed by recommendation scenario; no database or model dependency. |
 | `/api/v1/items/{parent_asin}` | Product details. |
 | `/api/v1/items/{parent_asin}/reviews` | Paginated reviews. |
 | `/api/v1/users/{user_id}` | Shopper profile. |
@@ -97,6 +98,30 @@ shopper IDs remain valid recommendation requests. Empty engines permit fallback;
 model/database failures propagate as errors. Recommendation routes return 503
 until models are ready. Content history stays local to the request; CF uses its
 saved interaction matrix. Seen dislikes and neutral products remain excluded.
+
+The demo response contains only three user IDs:
+
+```json
+{
+  "collaborative": "ae24aljoiqjoibv3ycrbis4ekx2a",
+  "content_based": "aeayitldccp4fwimhv7tgr67ysnq",
+  "popular": "aeqwyrohwdka275azy6mrqlu33vq"
+}
+```
+
+`config/api_config.py` is the single source for these examples. They are verified
+against the published models; the recommendation endpoint still chooses the
+actual engine. After publishing new models or replacing source data, request
+recommendations for each ID and confirm three different engines with nonempty
+results. Update these IDs if needed. The old `/api/v1/randomusers` route is removed.
+
+Deploy the backend before the updated frontend, which now loads `/api/v1/demo_user`.
+When opened on localhost, Flask defaults to `http://127.0.0.1:8000`, so run this
+updated backend locally alongside the frontend. Public storefront hosts default
+to the hosted API. Set `API_BASE_URL` in the frontend environment to override
+either default (for example, when using a different backend port). Restart Flask
+after changing that environment variable. Existing database functions/indexes
+are not dropped or changed by this code update.
 
 ## Verification and navigation
 

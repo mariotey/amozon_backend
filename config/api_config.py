@@ -16,3 +16,11 @@ MODEL_IDS = {
     "content_based_filtering": "1fa76797-5438-4271-8aa0-0b74d64df9d6"
 }
 TOOLS = list(MODEL_IDS)
+
+# Verified examples for the published MODEL_IDS above. These are real shoppers;
+# recommendation routing is unchanged. Recheck all three after model/data updates.
+DEMO_USERS = {
+    "collaborative": "ae24aljoiqjoibv3ycrbis4ekx2a",
+    "content_based": "aeayitldccp4fwimhv7tgr67ysnq",
+    "popular": "aeqwyrohwdka275azy6mrqlu33vq",
+}

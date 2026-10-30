@@ -219,16 +219,6 @@ class ServingData:
             logger.warning("Supabase serving query failed (%s)", type(exc).__name__)
             raise DependencyUnavailable("Supabase request failed") from None
 
-    def random_users(self, n):
-        with timed("Shopper selection"):
-            rows = self._execute(self.client.rpc("random_shoppers", {"sample_size": n})).data
-        # SQL selects distinct IDs before random ordering/limiting, never client-side sampling.
-        if len(rows) > n or any(row.get("user_id") is None for row in rows):
-            raise DependencyUnavailable("Invalid shopper selection response")
-        if len({row["user_id"] for row in rows}) != len(rows):
-            raise DependencyUnavailable("Duplicate shopper selection response")
-        return [{"user_id": str(row["user_id"])} for row in rows]
-
     def popular_items(self, limit, *, exclude_ids=()):
         """Rank popular cards, paging bounded batches when excluding seen products.
 

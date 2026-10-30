@@ -77,13 +77,13 @@ final publishing cell in either notebook uploads to Supabase when executed. See
 | Each `recommender.py` | Recommendations and independent algorithm evaluation. |
 | Each `tool_config.py` | Algorithm defaults, identity, and bundle filename. |
 | `config/ml_config.py` | Dataset settings, split filenames, local data paths, and shared `REPO_ROOT`. |
-| `config/api_config.py` | Serving paths, shared Supabase names, and published `MODEL_IDS`. |
+| `config/api_config.py` | Serving paths, shared Supabase names, published `MODEL_IDS`, and three fixed `DEMO_USERS`. |
 | `src/metrics.py` | Shared Recall@K and NDCG@K calculations; populations remain algorithm-specific. |
 | `src/routing.py` | Calls the recommenders directly with loaded bundles; CF -> content -> popular fallback. |
 | `models_loader/` | Validate, save, load, and explicitly publish single-file model bundles. |
 | `utils/review_history.py` | Shared latest-review preference resolution. |
 | `utils/supabase_utils.py` | Manual source reads, targeted serving queries, and model download. |
-| `sql/001_on_demand_serving.sql` | Required manual setup for shopper sampling and query indexes. |
+| `sql/001_serving_indexes.sql` | Manual query indexes for history, product, profile, and popularity lookups. |
 | `tests/` | Three small regression modules for data, models/notebooks, and API behavior. |
 
 The obsolete evaluation/training runners and unused inference/scripts/release
@@ -113,7 +113,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for publication and cache behavior.
 
 ## Run the API
 
-After configuring Supabase tables, storage, SQL, and models as described in
+After configuring Supabase tables, storage, indexes, and models as described in
 [DEPLOYMENT.md](DEPLOYMENT.md), run:
 
 ```powershell
@@ -124,6 +124,11 @@ Open `/docs` for endpoints. `/health` is liveness; `/ready` is model readiness.
 Browsing uses targeted Supabase queries and works independently of model loading.
 CF uses saved factors/history; content fallback loads only the requested
 shopper's history. Model and database failures remain errors, not empty results.
+
+`GET /api/v1/demo_user` returns exactly three fixed IDs keyed by `collaborative`,
+`content_based`, and `popular`. It does not query Supabase or wait for models.
+The frontend uses these examples instead of a random-shopper endpoint; keep their
+IDs in `config/api_config.py` and recheck their routes after model/data updates.
 
 Run the offline regression suite with:
 
