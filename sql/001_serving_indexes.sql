@@ -21,7 +21,9 @@ create index if not exists review_product_page_idx
     on public."Review" (parent_asin, review_date desc nulls last, review_id asc);
 
 create index if not exists item_popular_order_idx
-    on public."Item" (num_reviews desc nulls last, avg_rating desc nulls last, parent_asin asc nulls last);
+    on public."Item" (
+        num_reviews desc nulls last, avg_rating desc nulls last, parent_asin asc nulls last
+    );
 
 -- Omit these if equivalent primary-key/unique indexes already exist under other names.
 create unique index if not exists item_parent_asin_lookup_idx on public."Item" (parent_asin);

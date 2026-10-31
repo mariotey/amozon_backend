@@ -1,0 +1,28 @@
+Created with the built-in image generation tool.
+
+Edit target: amozon-project-overview-v11.png
+
+Give this existing Amozon architecture infographic a careful FINAL SPACING AND READABILITY PASS. Preserve its design and content; do not redesign or add detail.
+
+Keep the current three-row composition, navy/orange palette, modest Amozon title, tiny Supabase branding, small Vercel and Render deployment marks, two side-by-side algorithm columns, and the popular-products row underneath. Preserve all wording, including "Model registry", "model artefacts", "FASTAPI ENDPOINTS", "STOREFRONT EXPERIENCE", and "DATA & MODEL DEVELOPMENT". No repository names or new features.
+
+Improve readability and consistency:
+- Crisp, high-resolution rendering, clean sans-serif typography, sharp text and arrowheads; all labels should be legible when the image is opened at its normal size.
+- Consistent body-text sizes and line spacing. Allow short natural line breaks rather than shrinking text to squeeze it into a box.
+- Equal internal padding around text and icons in each card; use roughly 18–24 pixels of breathing room where space permits.
+- Align the five upper cards on common top and bottom edges, with evenly spaced short connector arrows. Keep their headings, captions, and icons balanced vertically.
+- Center the Database and Model registry text within their respective content regions, with equal padding and consistent heading-to-description gaps.
+- Keep the Supabase logo and wordmark SMALL, exactly at their current discreet scale. Keep its caption centered below.
+- Align the two lower white components on common top and bottom edges as closely as possible. Align their outer section headings on the same baseline, with consistent spacing above the components.
+- Center Vercel and Render icons/wordmarks vertically alongside their corresponding headings. Keep modest gaps between headings and deployment marks.
+- Inside FastAPI endpoints, align both algorithm columns' headings, ALS/TF-IDF rows, and descriptions. Keep equal column widths, a clean gutter, consistent spacing to Popular products, and balanced footer padding.
+- Keep all content within the canvas, with even outer margins and no clipped lettering.
+
+CONNECTORS:
+Keep all paths separate and labels readable on empty navy background. No arrow may touch a label or cross a heading.
+Database read-only data arrow should terminate cleanly on the endpoints card near its upper-left corner, clear of the FASTAPI ENDPOINTS lettering.
+For the model-artefact loading arrow, route from Model registry down/right through open space into the FAR-RIGHT part of the endpoints card's TOP EDGE, to the right of the Render wordmark. It should touch the white card rather than end floating above a heading. Place "Load saved artefacts" alongside a clear stretch ABOVE the endpoints heading; no intersection with Render branding or the database arrow.
+Keep browser requests and product/recommendation responses in separate horizontal lanes between storefront and endpoints. Labels should have adequate whitespace and avoid crossing their arrow shafts.
+Keep Publish data and Publish artefacts short, aligned, and unobscured.
+
+Do not add section-number circles, an internal Recommendation API title, internal algorithm arrows, "No usable picks" labels, larger platform logos, extra explanatory paragraphs, or new icons. The goal is the same compact diagram, just more evenly spaced and easier to read.

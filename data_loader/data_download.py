@@ -1,7 +1,8 @@
 """Explicitly download Amazon review and matching metadata."""
+
 import ast
 import json
-from typing import Any
+from typing import Any, cast
 
 from datasets import load_dataset
 import numpy as np
@@ -9,13 +10,14 @@ import pandas as pd
 
 from config.ml_config import DATASET_NAME, DATASET_CATEGORY, DATASET_SPLIT_PERCENTAGE
 
-
 CATEGORY_REPLACEMENTS = {
     "accounting": "accounting & finance",
     "antivirus": "antivirus & security",
     "education": "education & reference",
     "free one-day shipping i software": "free one-day shipping for software",
-    "free one-day shipping on select software with your citi card": "free one-day shipping for software",
+    "free one-day shipping on select software with your citi card": (
+        "free one-day shipping for software"
+    ),
     "medicine": "medicine & health sciences",
     "photography": "photography & graphic design",
     "programming": "programming & web development",
@@ -25,7 +27,15 @@ CATEGORY_REPLACEMENTS = {
 
 
 def parse_categories(value: Any) -> list[str]:
-    """Normalize collection-valued and legacy string-valued categories."""
+    """
+    Normalize collection-valued and legacy string-valued categories.
+
+    Args:
+    - value(Any): Scalar or collection to normalize or inspect.
+
+    Returns:
+    - list[str]: Sorted unique categories with aliases and casing normalized.
+    """
     if isinstance(value, str):
         if not value.strip():
             return []
@@ -44,17 +54,37 @@ def parse_categories(value: Any) -> list[str]:
 
 
 def parse_videos(value: Any) -> dict:
-    """Normalize empty video fields without mutating the source value."""
+    """
+    Normalize empty video fields without mutating the source value.
+
+    Args:
+    - value(Any): Scalar or collection to normalize or inspect.
+
+    Returns:
+    - dict: Metadata with single empty-string lists replaced by empty lists.
+    """
     if not isinstance(value, dict):
         return {}
     return {
-        key: [] if isinstance(entries, (list, np.ndarray))
-        and len(entries) == 1 and entries[0] == "" else entries
+        key: (
+            []
+            if isinstance(entries, (list, np.ndarray)) and len(entries) == 1 and entries[0] == ""
+            else entries
+        )
         for key, entries in value.items()
     }
 
 
 def _json_value(value: Any) -> Any:
+    """
+    Convert nested NumPy values and missing scalars into JSON-compatible values.
+
+    Args:
+    - value(Any): Scalar or collection to normalize or inspect.
+
+    Returns:
+    - Any: Nested JSON-compatible values with missing scalars replaced by None.
+    """
     if isinstance(value, dict):
         return {key: _json_value(entry) for key, entry in value.items()}
     if isinstance(value, (list, tuple, np.ndarray)):
@@ -65,6 +95,15 @@ def _json_value(value: Any) -> Any:
 
 
 def _normalize_reviews(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Copy raw reviews, normalize text and ratings, and preserve UTC timestamps.
+
+    Args:
+    - frame(pd.DataFrame): Input table to normalize, validate, or serialize.
+
+    Returns:
+    - pd.DataFrame: Normalized review rows with renamed fields and UTC review dates.
+    """
     frame = frame.copy()
     frame["rating"] = pd.to_numeric(frame["rating"], errors="coerce")
     for field in ("title", "text", "asin", "parent_asin", "user_id"):
@@ -72,17 +111,43 @@ def _normalize_reviews(frame: pd.DataFrame) -> pd.DataFrame:
     frame["images"] = frame["images"].map(lambda value: json.dumps(_json_value(value)))
     # Keep sub-day information for deterministic ordering and later time splits.
     frame["review_date"] = pd.to_datetime(frame["timestamp"], unit="ms", utc=True)
-    frame = frame[[
-        "asin", "parent_asin", "user_id", "review_date", "title", "text",
-        "images", "verified_purchase", "helpful_vote", "rating",
-    ]]
-    return frame.rename(columns={
-        "title": "review_title", "text": "review_text", "images": "review_images",
-        "rating": "review_rating",
-    })
+    frame = cast(
+        pd.DataFrame,
+        frame[
+            [
+                "asin",
+                "parent_asin",
+                "user_id",
+                "review_date",
+                "title",
+                "text",
+                "images",
+                "verified_purchase",
+                "helpful_vote",
+                "rating",
+            ]
+        ],
+    )
+    return frame.rename(
+        columns={
+            "title": "review_title",
+            "text": "review_text",
+            "images": "review_images",
+            "rating": "review_rating",
+        }
+    )
 
 
 def _normalize_metadata(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Copy raw item metadata and normalize its fields for transformation.
+
+    Args:
+    - frame(pd.DataFrame): Input table to normalize, validate, or serialize.
+
+    Returns:
+    - pd.DataFrame: Normalized item rows with parsed collections and renamed fields.
+    """
     frame = frame.copy()
     for field in ("parent_asin", "title", "main_category", "store"):
         frame[field] = frame[field].astype("string").str.strip().str.lower()
@@ -90,26 +155,51 @@ def _normalize_metadata(frame: pd.DataFrame) -> pd.DataFrame:
     frame["videos"] = frame["videos"].map(parse_videos)
     frame["rating_number"] = pd.to_numeric(frame["rating_number"], errors="coerce")
     frame["price"] = pd.to_numeric(frame["price"], errors="coerce")
-    frame = frame[[
-        "parent_asin", "title", "main_category", "categories", "description", "features",
-        "details", "images", "videos", "rating_number", "store", "price",
-    ]]
-    return frame.rename(columns={
-        "title": "item_title", "images": "item_images", "videos": "item_videos",
-        "rating_number": "item_rating",
-    })
+    frame = cast(
+        pd.DataFrame,
+        frame[
+            [
+                "parent_asin",
+                "title",
+                "main_category",
+                "categories",
+                "description",
+                "features",
+                "details",
+                "images",
+                "videos",
+                "rating_number",
+                "store",
+                "price",
+            ]
+        ],
+    )
+    return frame.rename(
+        columns={
+            "title": "item_title",
+            "images": "item_images",
+            "videos": "item_videos",
+            "rating_number": "item_rating",
+        }
+    )
 
 
 def download_data() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return normalized review/metadata DataFrames without exporting local files.
+    """
+    Return normalized review/metadata DataFrames without exporting local files.
 
-    The datasets library may maintain its own download/Arrow cache. No project
-    raw or transformed Parquet snapshots are written by this function.
+    The datasets library may maintain its own download/Arrow cache. No project raw or transformed
+    Parquet snapshots are written by this function.
+
+    Args:
+    - None: No explicit arguments.
+
+    Returns:
+    - tuple[pd.DataFrame, pd.DataFrame]: Normalized reviews and full category metadata, in that
+      order.
     """
     if not 0 < DATASET_SPLIT_PERCENTAGE <= 100:
-        raise ValueError(
-            "DATASET_SPLIT_PERCENTAGE must be between 0 and 100"
-        )
+        raise ValueError("DATASET_SPLIT_PERCENTAGE must be between 0 and 100")
 
     review_split = f"full[:{DATASET_SPLIT_PERCENTAGE}%]"
 
@@ -125,4 +215,6 @@ def download_data() -> tuple[pd.DataFrame, pd.DataFrame]:
         split="full",
     )
 
-    return _normalize_reviews(reviews.to_pandas()), _normalize_metadata(metadata.to_pandas())
+    return _normalize_reviews(cast(pd.DataFrame, reviews.to_pandas())), _normalize_metadata(
+        cast(pd.DataFrame, metadata.to_pandas())
+    )

@@ -6,7 +6,9 @@ rating/recency-weighted user profile. Cosine similarity selects a bounded pool;
 seen items are excluded, category preference boosts scores, and a free-only
 preference can reduce results. Fewer than n results is valid.
 """
+
 import logging
+from typing import cast
 import numpy as np
 import pandas as pd
 import scipy.sparse
@@ -20,10 +22,11 @@ from .tool_config import (
     CANDIDATE_POOL_MULTIPLIER,
     MIN_RATING_THRESHOLD,
     CATEGORY_BOOST,
-    FREE_PREFERENCE_THRESHOLD
+    FREE_PREFERENCE_THRESHOLD,
 )
 
 logger = logging.getLogger(__name__)
+
 
 def build_user_profile(
     user_id: str,
@@ -35,14 +38,13 @@ def build_user_profile(
     Build a weighted TF-IDF profile vector for a user from their review history.
 
     Args:
-    - user_id (str): The user identifier
-    - user_item_df (pd.DataFrame): DataFrame of user-item interactions
-    - item_matrix (scipy.sparse.csr_matrix): Sparse TF-IDF item matrix (n_items × n_features)
-    - item_to_idx (dict[str, int]): Mapping from parent_asin to row index in item_matrix
+    - user_id(str): Shopper identifier used to select history or recommendations.
+    - user_item_df(pd.DataFrame): Reviews with user IDs, product IDs, ratings, and recency weights.
+    - item_matrix(scipy.sparse.csr_matrix): Sparse item-feature matrix aligned with metadata.
+    - item_to_idx(dict[str, int]): Product-to-item-matrix-row map.
 
     Returns:
-    - np.ndarray: A (1 × n_features) numpy array representing the user profile, or None if the
-                  user has no qualifying history
+    - np.ndarray | None: Profile shaped (1, n_features), or None without known positive history.
     """
     hist = latest_reviews(user_item_df.loc[user_item_df["user_id"] == user_id])
     # Mapping a callable avoids constructing a Series from the entire item map.
@@ -53,45 +55,62 @@ def build_user_profile(
         logger.warning("No positive history found for user: %s", user_id)
         return None
 
-    return _weighted_profile(hist.loc[positive], item_matrix, indices.loc[positive].to_numpy(dtype=np.intp))
+    return _weighted_profile(
+        hist.loc[positive], item_matrix, indices.loc[positive].to_numpy(dtype=np.intp)
+    )
 
 
 def _weighted_profile(hist, item_matrix, indices) -> np.ndarray:
-    """Average known, positive item vectors using the original rating/recency weights."""
+    """
+    Average known, positive item vectors using the original rating/recency weights.
+
+    Args:
+    - hist(pd.DataFrame): Known positive reviews used to build a weighted profile.
+    - item_matrix(scipy.sparse.csr_matrix): Sparse item-feature matrix aligned with metadata.
+    - indices(np.ndarray): Item matrix row indices for the positive history.
+
+    Returns:
+    - np.ndarray: Rating- and recency-weighted profile shaped (1, n_features).
+    """
     weights = (hist["review_rating"] / 5).values * hist["recency_weight"].values
     profile = (weights @ item_matrix[indices]) / (weights.sum() + 1e-9)
     return np.asarray(profile).reshape(1, -1)
 
 
-def _normalize_items(item_matrix, profile_dtype):
-    """Match cosine_similarity's common dtype before normalizing catalogue rows."""
-    dtype = np.float32 if profile_dtype == item_matrix.dtype == np.float32 else np.float64
-    return normalize(item_matrix.astype(dtype, copy=False), copy=True)
+def _normalize_items(item_matrix, profile_dtype) -> scipy.sparse.csr_matrix:
+    """
+    Match cosine_similarity's common dtype before normalizing catalogue rows.
 
-def build_item_index_maps(
-    meta_df: pd.DataFrame
-) -> tuple[dict[str, int], dict[int, str]]:
+    Args:
+    - item_matrix(scipy.sparse.csr_matrix): Sparse item-feature matrix aligned with metadata.
+    - profile_dtype(np.dtype): Profile dtype used to select the cosine-computation dtype.
+
+    Returns:
+    - scipy.sparse.csr_matrix: Row-normalized item matrix in the common cosine-computation dtype.
+    """
+    dtype = np.float32 if profile_dtype == item_matrix.dtype == np.float32 else np.float64
+    return cast(
+        scipy.sparse.csr_matrix,
+        normalize(item_matrix.astype(dtype, copy=False), copy=True),
+    )
+
+
+def build_item_index_maps(meta_df: pd.DataFrame) -> tuple[dict[str, int], dict[int, str]]:
     """
     Build mappings between item IDs and their corresponding matrix indices.
 
     Args:
-    - meta_df (pd.DataFrame): DataFrame containing a "parent_asin" column
+    - meta_df(pd.DataFrame): Product metadata aligned with product identifiers.
 
     Returns:
-    - tuple:
-        - item_to_idx: Maps each parent ASIN to its integer index
-        - idx_to_item: Maps each integer index back to its parent ASIN
+    - tuple[dict[str, int], dict[int, str]]: Product-to-row map followed by its row-to-product
+      inverse.
     """
-    item_to_idx = {
-        asin: idx
-        for idx, asin in enumerate(meta_df["parent_asin"])
-    }
-    idx_to_item = {
-        idx: asin
-        for asin, idx in item_to_idx.items()
-    }
+    item_to_idx = {asin: idx for idx, asin in enumerate(meta_df["parent_asin"])}
+    idx_to_item = {idx: asin for asin, idx in item_to_idx.items()}
 
     return item_to_idx, idx_to_item
+
 
 def recommend_for_user(
     user_id: str,
@@ -108,14 +127,14 @@ def recommend_for_user(
     paid items for users who prefer free software.
 
     Args:
-    - user_id (str): The user identifier
-    - user_item_df (pd.DataFrame): DataFrame of user-item interactions
-    - artefacts (dict): Item matrix and row-aligned metadata
-    - n (int): Number of recommendations to return
+    - user_id(str): Shopper identifier used to select history or recommendations.
+    - user_item_df(pd.DataFrame): Reviews with user IDs, product IDs, ratings, and recency weights.
+    - artefacts(dict): Named model bundle with aligned representations and product identifiers.
+    - n(int): Maximum number of results to return.
+    - index_maps(tuple[dict[str, int], dict[int, str]] | None): Optional cached content index maps.
 
     Returns:
-    - pd.DataFrame: A DataFrame with columns ["parent_asin", "score", "item_title",
-                    "main_category", "is_free"]. Empty if the user has no history
+    - pd.DataFrame: Ranked product IDs, scores, titles, categories, and free flags; may be empty.
 
     Raises:
     - ValueError: If n is not a positive integer.
@@ -126,12 +145,27 @@ def recommend_for_user(
     # A newer dislike/neutral rating replaces an older like of the same product.
     # Keep every distinct reviewed product available for seen-item exclusion.
     history = latest_reviews(user_item_df.loc[user_item_df["user_id"] == user_id])
-    item_to_idx, _ = index_maps if index_maps is not None else build_item_index_maps(artefacts["metadata"])
+    item_to_idx, _ = (
+        index_maps if index_maps is not None else build_item_index_maps(artefacts["metadata"])
+    )
     return _recommend_from_history(user_id, history, artefacts, n, item_to_idx)
 
 
 def _recommend_from_history(user_id, history, artefacts, n, item_to_idx, normalized_items=None):
-    """Shared ranking for one resolved history; evaluation reuses normalized items."""
+    """
+    Shared ranking for one resolved history; evaluation reuses normalized items.
+
+    Args:
+    - user_id(str): Shopper identifier used to select history or recommendations.
+    - history(pd.DataFrame): Available reviews, including ratings and seen products.
+    - artefacts(dict): Named model bundle with aligned representations and product identifiers.
+    - n(int): Maximum number of results to return.
+    - item_to_idx(dict[str, int]): Product-to-item-matrix-row map.
+    - normalized_items(scipy.sparse.csr_matrix | None): Optional row-normalized catalogue.
+
+    Returns:
+    - pd.DataFrame: Ranked unseen content recommendations with scores and metadata.
+    """
     item_matrix, meta_df = artefacts["item_matrix"], artefacts["metadata"]
     indices = history["parent_asin"].map(item_to_idx.get)
     positive = indices.notna() & history["review_rating"].ge(MIN_RATING_THRESHOLD)
@@ -150,14 +184,10 @@ def _recommend_from_history(user_id, history, artefacts, n, item_to_idx, normali
     # Metadata rows already correspond to matrix indices; no catalogue-wide joins.
     hist_meta = meta_df.iloc[positive_idx]
     top_category: str | None = (
-        hist_meta["main_category"].value_counts().index[0]
-        if not hist_meta.empty
-        else None
+        hist_meta["main_category"].value_counts().index[0] if not hist_meta.empty else None
     )
     prefers_free: bool = (
-        hist_meta["is_free"].mean() > FREE_PREFERENCE_THRESHOLD
-        if not hist_meta.empty
-        else False
+        hist_meta["is_free"].mean() > FREE_PREFERENCE_THRESHOLD if not hist_meta.empty else False
     )
 
     pool_size = n * CANDIDATE_POOL_MULTIPLIER
@@ -171,9 +201,7 @@ def _recommend_from_history(user_id, history, artefacts, n, item_to_idx, normali
     pool.insert(1, "score", scores[pool_idx])
 
     if top_category:
-        pool["score"] += CATEGORY_BOOST * (
-            pool["main_category"] == top_category
-        ).astype(float)
+        pool["score"] += CATEGORY_BOOST * (pool["main_category"] == top_category).astype(float)
         logger.debug("Applied category boost for: %s", top_category)
 
     if prefers_free:
@@ -186,6 +214,7 @@ def _recommend_from_history(user_id, history, artefacts, n, item_to_idx, normali
 
     return recommendations
 
+
 def similar_items(
     parent_asin: str,
     artefacts: dict,
@@ -195,13 +224,12 @@ def similar_items(
     Find the top-N items most similar to a given item using cosine similarity.
 
     Args:
-    - parent_asin (str): The ASIN of the seed item
-    - artefacts (tuple): Loaded artefacts of the tool
-    - n (int): Number of similar items to return
+    - parent_asin(str): Product identifier to look up or use as a similarity seed.
+    - artefacts(dict): Named model bundle with aligned representations and product identifiers.
+    - n(int): Maximum number of results to return.
 
     Returns:
-    - pd.DataFrame: A DataFrame with columns ["parent_asin", "score", "item_title",
-                    "main_category"]. Empty if the ASIN is not in the index.
+    - pd.DataFrame: Similar product IDs, scores, titles, and categories; excludes the seed.
 
     Raises:
     - ValueError: If n is not a positive integer
@@ -217,9 +245,7 @@ def similar_items(
         return pd.DataFrame()
 
     idx = item_to_idx[parent_asin]
-    scores: np.ndarray = cosine_similarity(
-        item_matrix[idx], item_matrix
-    ).flatten()
+    scores: np.ndarray = cosine_similarity(item_matrix[idx], item_matrix).flatten()
     scores[idx] = -1
 
     eligible = np.flatnonzero(np.isfinite(scores) & (np.arange(len(scores)) != idx))
@@ -237,7 +263,17 @@ def similar_items(
 
 
 def evaluate(artefacts: dict, data, k: int = DEFAULT_TOP_N) -> dict:
-    """Prepare shared inputs once, then evaluate the same ranking used for serving."""
+    """
+    Prepare shared inputs once, then evaluate the same ranking used for serving.
+
+    Args:
+    - artefacts(dict): Named model bundle with aligned representations and product identifiers.
+    - data(RecommendationData): Prepared history, supported targets, and exclusion counts.
+    - k(int): Positive ranking cutoff used for Recall@K and NDCG@K.
+
+    Returns:
+    - dict: Summary Recall/NDCG metrics, exclusion counts, and per-user metrics.
+    """
     from src.metrics import evaluate_predictions
 
     users = data.targets.user_id.unique()
@@ -253,11 +289,18 @@ def evaluate(artefacts: dict, data, k: int = DEFAULT_TOP_N) -> dict:
         empty_history = history.iloc[:0]
         for user in tqdm(users):
             rows = _recommend_from_history(
-                user, histories.get(user, empty_history), artefacts, k, item_to_idx, normalized_items,
+                user,
+                histories.get(user, empty_history),
+                artefacts,
+                k,
+                item_to_idx,
+                normalized_items,
             )
             predictions[user] = rows.parent_asin.tolist() if not rows.empty else []
 
     result = evaluate_predictions(predictions, data.targets, k)
-    result["summary"].update(excluded_targets=data.excluded_targets, excluded_users=data.excluded_users)
+    result["summary"].update(
+        excluded_targets=data.excluded_targets, excluded_users=data.excluded_users
+    )
 
     return result

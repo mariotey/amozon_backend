@@ -70,20 +70,20 @@ final publishing cell in either notebook uploads to Supabase when executed. See
 
 | Location | Purpose |
 | --- | --- |
-| `setup.py` | First-run dependency installation, notebook kernel, folders, and missing `.env` template. |
-| `data_loader/` | Download/transform helpers, explicit Supabase reads, chronological splitting, algorithm-specific data views. |
+| `setup.py` | Install dependencies and the kernel; create folders and a missing `.env` template. |
+| `data_loader/` | Download/transform, Supabase reads, time splits, and algorithm data views. |
 | `src/collaborative_filtering/model.py` | Build the signed rating matrix and fit ALS in memory. |
-| `src/content_based_filtering/model.py` | Fit item-text TF-IDF and return precomputed representations. |
+| `src/content_based_filtering/model.py` | Fit item-text TF-IDF and return item representations. |
 | Each `recommender.py` | Recommendations and independent algorithm evaluation. |
 | Each `tool_config.py` | Algorithm defaults, identity, and bundle filename. |
-| `config/ml_config.py` | Dataset settings, split filenames, local data paths, and shared `REPO_ROOT`. |
-| `config/api_config.py` | Serving paths, shared Supabase names, published `MODEL_IDS`, and three fixed `DEMO_USERS`. |
-| `src/metrics.py` | Shared Recall@K and NDCG@K calculations; populations remain algorithm-specific. |
-| `src/routing.py` | Calls the recommenders directly with loaded bundles; CF -> content -> popular fallback. |
+| `config/ml_config.py` | Dataset settings, split files, local paths, and shared `REPO_ROOT`. |
+| `config/api_config.py` | Serving paths, shared Supabase names, and published `MODEL_IDS`. |
+| `src/metrics.py` | Recall@K/NDCG@K; each algorithm supplies its own population. |
+| `src/routing.py` | Call loaded recommenders with CF -> content -> popular fallback. |
 | `models_loader/` | Validate, save, load, and explicitly publish single-file model bundles. |
 | `utils/review_history.py` | Shared latest-review preference resolution. |
 | `utils/supabase_utils.py` | Manual source reads, targeted serving queries, and model download. |
-| `sql/001_serving_indexes.sql` | Manual query indexes for history, product, profile, and popularity lookups. |
+| `sql/001_serving_indexes.sql` | Manual indexes for history, products, profiles, and popularity. |
 | `tests/` | Three small regression modules for data, models/notebooks, and API behavior. |
 
 The obsolete evaluation/training runners and unused inference/scripts/release
@@ -125,10 +125,8 @@ Browsing uses targeted Supabase queries and works independently of model loading
 CF uses saved factors/history; content fallback loads only the requested
 shopper's history. Model and database failures remain errors, not empty results.
 
-`GET /api/v1/demo_user` returns exactly three fixed IDs keyed by `collaborative`,
-`content_based`, and `popular`. It does not query Supabase or wait for models.
-The frontend uses these examples instead of a random-shopper endpoint; keep their
-IDs in `config/api_config.py` and recheck their routes after model/data updates.
+The storefront owns its fixed sample shopper IDs. It requests their histories and
+recommendations through the same user endpoints as any other shopper.
 
 Run the offline regression suite with:
 

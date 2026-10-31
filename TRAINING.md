@@ -6,15 +6,14 @@ in your IDE. Setup installs dependencies and creates folders; it does not run
 notebooks or create Supabase tables. See [DEPLOYMENT.md](DEPLOYMENT.md) for the
 required database and storage resources.
 
-Use
-`notebook/publish_dataset.ipynb` to download/transform in memory and intentionally
-replace Supabase User, Item, and Review. There are no raw/transformed local exports;
-the datasets library may maintain its own download cache. Publication is batched
-and not atomic, so failures require rerunning the replacement. ModelRegistry and
-Storage are separate. Then run `notebook/train_test_split_data.ipynb`. This writes one current
-set of train.parquet, validation.parquet, test.parquet, and items.parquet under
-`data/output` (the shared config.ml_config.DATA_OUTPUT_DIR). Re-running replaces those files; no dataset versions
-or split manifests are created.
+Use `notebook/publish_dataset.ipynb` to download/transform in memory and intentionally replace
+Supabase User, Item, and Review. There are no raw/transformed local exports; the datasets library
+may maintain its own download cache. Publication is batched and not atomic, so failures require
+rerunning the replacement. ModelRegistry and Storage are separate. Then run
+`notebook/train_test_split_data.ipynb`. This writes one current set of train.parquet,
+validation.parquet, test.parquet, and items.parquet under `data/output` (the shared
+config.ml_config.DATA_OUTPUT_DIR). Re-running replaces those files; no dataset versions or split
+manifests are created.
 
 ## One notebook per algorithm
 

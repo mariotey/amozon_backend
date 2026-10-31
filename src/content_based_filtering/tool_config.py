@@ -1,4 +1,5 @@
 """Default settings and the single serving-bundle filename."""
+
 from pathlib import Path
 
 MODEL_NAME: str = Path(__file__).parent.name

@@ -1,4 +1,5 @@
 """First-run environment setup, not a setuptools packaging entry point."""
+
 import argparse
 import shutil
 import subprocess
@@ -8,7 +9,15 @@ from config.ml_config import DATA_OUTPUT_DIR, MODEL_ARTEFACT_DIR, REPO_ROOT, TOO
 
 
 def prepare_local_files():
-    """Create workflow folders and a credential template without replacing files."""
+    """
+    Create workflow folders and a credential template without replacing files.
+
+    Args:
+    - None: No explicit arguments.
+
+    Returns:
+    - None: Completes the operation without returning a value.
+    """
     for directory in (DATA_OUTPUT_DIR, *(MODEL_ARTEFACT_DIR / tool for tool in TOOLS)):
         directory.mkdir(parents=True, exist_ok=True)
         print(f"Ready: {directory}")
@@ -27,33 +36,65 @@ def prepare_local_files():
 
 
 def install_dependencies():
-    """Use the committed lockfile and keep the notebook kernel inside .venv."""
+    """
+    Use the committed lockfile and keep the notebook kernel inside .venv.
+
+    Args:
+    - None: No explicit arguments.
+
+    Returns:
+    - None: Completes the operation without returning a value.
+    """
     executable = shutil.which("uv")
     if executable:
         uv = [executable]
     else:
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "uv"],
-            cwd=REPO_ROOT, check=True,
+            cwd=REPO_ROOT,
+            check=True,
         )
         uv = [sys.executable, "-m", "uv"]
 
     subprocess.run(
         [*uv, "sync", "--frozen", "--no-install-project"],
-        cwd=REPO_ROOT, check=True,
+        cwd=REPO_ROOT,
+        check=True,
     )
     subprocess.run(
-        [*uv, "run", "--no-sync", "python", "-m", "ipykernel", "install",
-         "--sys-prefix", "--name", "amozon_backend",
-         "--display-name", "Amozon Backend (.venv)"],
-        cwd=REPO_ROOT, check=True,
+        [
+            *uv,
+            "run",
+            "--no-sync",
+            "python",
+            "-m",
+            "ipykernel",
+            "install",
+            "--sys-prefix",
+            "--name",
+            "amozon_backend",
+            "--display-name",
+            "Amozon Backend (.venv)",
+        ],
+        cwd=REPO_ROOT,
+        check=True,
     )
 
 
 def main(argv=None):
+    """
+    Parse setup options, prepare local files, and install dependencies unless skipped.
+
+    Args:
+    - argv(list[str] | None): Setup arguments; None reads process arguments.
+
+    Returns:
+    - int: Zero on success; one for an unsupported interpreter or setup failure.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--skip-install", action="store_true",
+        "--skip-install",
+        action="store_true",
         help="Only create local folders and the .env template; skip dependencies and kernel setup.",
     )
     args = parser.parse_args(argv)

@@ -26,8 +26,8 @@ intentional full replacement of User/Item/Review; it does not export intermediat
 local files or alter model records. Run it outside serving use: batched deletion
 and insertion are not one transaction. Manually review/apply
 [sql/001_serving_indexes.sql](sql/001_serving_indexes.sql): these indexes support
-the active history, product, profile, and popularity queries. Demo shopper IDs
-come from application configuration; no shopper-sampling RPC is required.
+the active history, product, profile, and popularity queries. Sample shopper IDs
+are configured in the frontend; no shopper-sampling RPC is required.
 This repository does not apply SQL or change database permissions automatically.
 
 ## Model bundles and publication
@@ -51,9 +51,9 @@ are not converted on download. To publish models for a clean deployment:
    # Repeat for content_based_filtering when its selected bundle is ready.
    ```
 
-3. Put each returned ID under its algorithm name in
-   `config/api_config.py` MODEL_IDS. Publication uploads before inserting the registry row and does not
-   delete older models. It never happens during app startup or evaluation.
+3. Put each returned ID under its algorithm name in `config/api_config.py` MODEL_IDS. Publication
+   uploads before inserting the registry row and does not delete older models. It never happens
+   during app startup or evaluation.
 4. Deploy/restart with matching configuration. Existing local bundle caches are
    reused; replace or deliberately remove a cache to fetch a newly configured ID.
 
@@ -87,11 +87,10 @@ metadata queries. The API never loads experiment split files or entire tables.
 | `/ready` | Model readiness; does not guarantee database connectivity. |
 | `/docs`, `/redoc`, `/openapi.json` | API documentation/schema. |
 | `/api/v1/users/{user_id}/recommendations?n=10` | CF, then content, then unseen-popular fallback. |
-| `/api/v1/demo_user` | Exactly three fixed shopper IDs keyed by recommendation scenario; no database or model dependency. |
 | `/api/v1/items/{parent_asin}` | Product details. |
 | `/api/v1/items/{parent_asin}/reviews` | Paginated reviews. |
 | `/api/v1/users/{user_id}` | Shopper profile. |
-| `/api/v1/users/{user_id}/history` | Paginated verified history by default; verified_only=false includes all reviews. |
+| `/api/v1/users/{user_id}/history` | Verified review pages; `verified_only=false` includes all. |
 
 There is no root homepage and no standalone popular-items endpoint. Unknown
 shopper IDs remain valid recommendation requests. Empty engines permit fallback;
@@ -99,29 +98,20 @@ model/database failures propagate as errors. Recommendation routes return 503
 until models are ready. Content history stays local to the request; CF uses its
 saved interaction matrix. Seen dislikes and neutral products remain excluded.
 
-The demo response contains only three user IDs:
+The frontend owns the fixed sample shoppers in `static/scripts/config.js`; the
+recommendation endpoint chooses the actual engine. After publishing new models
+or replacing source data, check that those shoppers still receive nonempty
+results from three different engines, and update the frontend IDs if needed.
+Deploy the updated frontend before removing the shopper-discovery endpoint from
+the hosted backend so existing frontend releases continue to work during rollout.
 
-```json
-{
-  "collaborative": "ae24aljoiqjoibv3ycrbis4ekx2a",
-  "content_based": "aeayitldccp4fwimhv7tgr67ysnq",
-  "popular": "aeqwyrohwdka275azy6mrqlu33vq"
-}
-```
-
-`config/api_config.py` is the single source for these examples. They are verified
-against the published models; the recommendation endpoint still chooses the
-actual engine. After publishing new models or replacing source data, request
-recommendations for each ID and confirm three different engines with nonempty
-results. Update these IDs if needed. The old `/api/v1/randomusers` route is removed.
-
-Deploy the backend before the updated frontend, which now loads `/api/v1/demo_user`.
-When opened on localhost, Flask defaults to `http://127.0.0.1:8000`, so run this
-updated backend locally alongside the frontend. Public storefront hosts default
-to the hosted API. Set `API_BASE_URL` in the frontend environment to override
-either default (for example, when using a different backend port). Restart Flask
-after changing that environment variable. Existing database functions/indexes
-are not dropped or changed by this code update.
+The storefront requires `API_BASE_URL` in its environment. For local Flask, put
+the value in the frontend repository's Git-ignored `.env`; an existing environment
+variable takes precedence. Use `http://127.0.0.1:8000` for a local backend, or the
+hosted API URL for the deployed backend. Set the variable in Vercel before
+redeploying; there is no hostname-based default. Restart Flask after changing
+configuration. Existing database functions/indexes are not dropped or changed
+by this code update.
 
 ## Verification and navigation
 

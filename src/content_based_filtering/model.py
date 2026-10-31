@@ -1,5 +1,6 @@
 """Build reproducible TF-IDF artifacts from raw or prepared product text."""
-from typing import Any
+
+from typing import Any, cast
 import logging
 
 import numpy as np
@@ -7,7 +8,9 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 from .tool_config import (
-    TFIDF_MAX_FEATURES, TFIDF_NGRAM_RANGE, TFIDF_SUBLINEAR_TF,
+    TFIDF_MAX_FEATURES,
+    TFIDF_NGRAM_RANGE,
+    TFIDF_SUBLINEAR_TF,
 )
 
 logger = logging.getLogger(__name__)
@@ -17,7 +20,15 @@ _REQUIRED_COLUMNS = {"parent_asin", "main_category", "is_free", *_TEXT_FIELDS}
 
 
 def _text_parts(value: Any) -> list[str]:
-    """Flatten supported text containers without introducing missing-value tokens."""
+    """
+    Flatten supported text containers without introducing missing-value tokens.
+
+    Args:
+    - value(Any): Scalar or collection to normalize or inspect.
+
+    Returns:
+    - list[str]: Normalized text fragments in their original traversal order.
+    """
     if isinstance(value, str):
         normalized = " ".join(value.split())
         return [normalized] if normalized else []
@@ -34,19 +45,33 @@ def _text_parts(value: Any) -> list[str]:
 
 
 def build_item_text(row: Any) -> str:
-    """Join title, description, and features, including prepared plain strings.
+    """
+    Join title, description, and features, including prepared plain strings.
 
-    Raw list/array fields and nested collections are flattened in their original
-    order. Missing scalars are omitted rather than becoming 'nan' or '<NA>'.
+    Raw list/array fields and nested collections are flattened in their original order. Missing
+    scalars are omitted rather than becoming 'nan' or '<NA>'.
+
+    Args:
+    - row(Any): Product row containing title, description, and features.
+
+    Returns:
+    - str: Space-joined title, description, and features without missing-value tokens.
     """
     return " ".join(part for field in _TEXT_FIELDS for part in _text_parts(row[field]))
 
 
 def prepare_training_data(item_df: pd.DataFrame) -> pd.DataFrame:
-    """Validate product identity/flags and return text in stable product-ID order.
+    """
+    Validate product identity/flags and return text in stable product-ID order.
 
-    Sorting makes matrix rows, saved metadata, and learned vocabulary independent
-    of the incoming DataFrame row order. Input frames are never modified.
+    Sorting makes matrix rows, saved metadata, and learned vocabulary independent of the incoming
+    DataFrame row order. Input frames are never modified.
+
+    Args:
+    - item_df(pd.DataFrame): Product metadata with IDs, text, category, and free flags.
+
+    Returns:
+    - pd.DataFrame: Validated metadata and flattened text sorted by product ID.
     """
     if not isinstance(item_df, pd.DataFrame):
         raise ValueError("item_df must be a pandas DataFrame")
@@ -60,36 +85,55 @@ def prepare_training_data(item_df: pd.DataFrame) -> pd.DataFrame:
     valid_ids = ids.map(
         lambda value: isinstance(value, str) and bool(value.strip()) and value == value.strip()
     )
-    if not valid_ids.all():
+    if not cast(bool, valid_ids.all()):
         raise ValueError("parent_asin must contain nonempty strings without surrounding whitespace")
-    if ids.duplicated().any():
+    if cast(bool, ids.duplicated().any()):
         raise ValueError("Content training requires unique parent_asin values")
-    if not item_df["is_free"].map(lambda value: isinstance(value, (bool, np.bool_))).all():
+    if not cast(
+        bool, item_df["is_free"].map(lambda value: isinstance(value, (bool, np.bool_))).all()
+    ):
         raise ValueError("is_free must contain boolean values without missing entries")
 
-    prepared = item_df[list(sorted(_REQUIRED_COLUMNS))].copy()
+    prepared = cast(pd.DataFrame, item_df[list(sorted(_REQUIRED_COLUMNS))]).copy()
     prepared = prepared.sort_values("parent_asin", kind="stable").reset_index(drop=True)
     for field in (*_TEXT_FIELDS, "main_category"):
         prepared[field] = prepared[field].map(lambda value: " ".join(_text_parts(value)))
     prepared["is_free"] = prepared["is_free"].astype(bool)
     prepared["text"] = prepared.apply(build_item_text, axis=1)
-    if not prepared["text"].str.strip().ne("").any():
+    if not cast(bool, prepared["text"].str.strip().ne("").any()):
         raise ValueError("Content training requires a nonempty product-text corpus")
     return prepared
 
 
-def fit(items: pd.DataFrame, *, max_features: int = TFIDF_MAX_FEATURES,
-        ngram_range: tuple[int, int] = TFIDF_NGRAM_RANGE,
-        sublinear_tf: bool = TFIDF_SUBLINEAR_TF) -> dict:
-    """Fit item text in memory; the vectorizer is not needed by current serving.
+def fit(
+    items: pd.DataFrame,
+    *,
+    max_features: int = TFIDF_MAX_FEATURES,
+    ngram_range: tuple[int, int] = TFIDF_NGRAM_RANGE,
+    sublinear_tf: bool = TFIDF_SUBLINEAR_TF,
+) -> dict:
+    """
+    Fit item text in memory; the vectorizer is not needed by current serving.
 
-    New text requires rebuilding this bundle. Matrix rows and metadata stay
-    aligned; float32 stores the item representations with less numeric memory.
+    New text requires rebuilding this bundle. Matrix rows and metadata stay aligned; float32 stores
+    the item representations with less numeric memory.
+
+    Args:
+    - items(pd.DataFrame): Product metadata for the supplied workflow.
+    - max_features(int): Maximum TF-IDF vocabulary size.
+    - ngram_range(tuple[int, int]): Inclusive minimum and maximum token n-gram sizes.
+    - sublinear_tf(bool): Whether to apply logarithmic term-frequency scaling.
+
+    Returns:
+    - dict: Float32 TF-IDF item matrix and row-aligned serving metadata.
     """
     prepared = prepare_training_data(items)
     vectorizer = TfidfVectorizer(
-        max_features=max_features, ngram_range=ngram_range,
-        sublinear_tf=sublinear_tf, dtype=np.float32,
+        max_features=max_features,
+        ngram_range=ngram_range,
+        sublinear_tf=sublinear_tf,
+        # The runtime supports float32; the inferred library annotation only lists float64.
+        dtype=cast(Any, np.float32),
     )
     try:
         matrix = vectorizer.fit_transform(prepared["text"])
